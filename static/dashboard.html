@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ModelRouter - Usage Dashboard</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #0f0f1a; color: #e0e0e0; padding: 40px; }
+        .dashboard { max-width: 900px; margin: 0 auto; }
+        .card { background: #1a1a2e; border-radius: 12px; padding: 24px; margin: 16px 0; border: 1px solid #1a1a4e; }
+        .card h2 { color: #e94560; margin-top: 0; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+        .metric { text-align: center; }
+        .metric .value { font-size: 32px; font-weight: 700; color: #4a9eff; }
+        .metric .label { font-size: 12px; color: #888; margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #1a1a4e; }
+        th { color: #888; font-size: 11px; text-transform: uppercase; }
+        .upgrade-banner { background: linear-gradient(135deg, #e94560, #4a9eff); padding: 20px; border-radius: 12px; text-align: center; }
+        .upgrade-banner button { background: white; color: #0f0f1a; border: none; padding: 12px 24px; border-radius: 8px; font-weight: 700; cursor: pointer; margin-top: 12px; }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <h1>ModelRouter Usage Dashboard</h1>
+        
+        <div class="grid">
+            <div class="card metric">
+                <div class="value" id="totalRequests">-</div>
+                <div class="label">Requests This Month</div>
+            </div>
+            <div class="card metric">
+                <div class="value" id="totalCost">-</div>
+                <div class="label">API Cost</div>
+            </div>
+            <div class="card metric">
+                <div class="value" id="savingsRate">-</div>
+                <div class="label">Savings from Caching</div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>Usage by Model</h2>
+            <table>
+                <thead><tr><th>Model</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr></thead>
+                <tbody id="modelUsage"></tbody>
+            </table>
+        </div>
+        
+        <div class="card">
+            <h2>Subscription</h2>
+            <div id="subscriptionInfo"></div>
+        </div>
+        
+        <div id="upgradePrompt" style="display:none">
+            <div class="upgrade-banner">
+                <h2>Unlock More Requests</h2>
+                <p>You've used 80% of your monthly limit. Upgrade to keep building.</p>
+                <button onclick="upgrade()">Upgrade to Pro - $20/mo</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        var apiKey = localStorage.getItem('apiKey') || 'demo-key-123';
+        
+        fetch('/billing/usage', { headers: {'X-API-Key': apiKey} })
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('totalRequests').textContent = data.usage.total_requests;
+                document.getElementById('totalCost').textContent = '$' + data.usage.total_cost.toFixed(4);
+                document.getElementById('savingsRate').textContent = '~40%';
+                
+                var html = '';
+                data.usage.by_model.forEach(m => {
+                    html += `<tr><td>${m.model}</td><td>${m.requests}</td><td>${m.tokens.toLocaleString()}</td><td>$${m.cost.toFixed(4)}</td></tr>`;
+                });
+                document.getElementById('modelUsage').innerHTML = html;
+                
+                document.getElementById('subscriptionInfo').innerHTML = 
+                    `<p>Tier: <strong>${data.subscription.tier}</strong></p>
+                     <p>Next billing: ${data.subscription.period_end}</p>
+                     <p>Est. monthly total: <strong>$${data.current_month_estimate.toFixed(2)}</strong></p>`;
+            });
+        
+        function upgrade() {
+            fetch('/subscribe', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json', 'X-API-Key': apiKey},
+                body: JSON.stringify({tier: 'pro'})
+            }).then(() => location.reload());
+        }
+    </script>
+</body>
+</html>

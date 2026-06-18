@@ -1,0 +1,32 @@
+# Production configuration by region
+regions:
+  us-east:
+    domain: us-east.modelrouter.com
+    database: postgresql://us-east.db.modelrouter.com:5432/router
+    redis: redis://us-east.cache.modelrouter.com:6379/0
+    replicas: 5
+    
+  eu-west:
+    domain: eu-west.modelrouter.com
+    database: postgresql://eu-west.db.modelrouter.com:5432/router
+    redis: redis://eu-west.cache.modelrouter.com:6379/0
+    replicas: 3
+    
+  ap-southeast:
+    domain: ap-southeast.modelrouter.com
+    database: postgresql://ap-southeast.db.modelrouter.com:5432/router
+    redis: redis://ap-southeast.cache.modelrouter.com:6379/0
+    replicas: 3
+
+# Global settings
+global:
+  rate_limit_per_user: 100
+  cache_ttl_hours: 24
+  max_prompt_length: 4000
+  
+# Monitoring
+monitoring:
+  datadog_api_key: "${DATADOG_API_KEY}"
+  sentry_dsn: "${SENTRY_DSN}"
+  alert_on_error_rate: 0.01  # Alert if error rate > 1%
+  alert_on_latency_p99: 5000  # Alert if p99 latency > 5s

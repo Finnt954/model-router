@@ -1,0 +1,6 @@
+.env 
+router.db 
+router_cache.db 
+router.log 
+__pycache__/ 
+*.pyc 

@@ -1,0 +1,166 @@
+# Terraform: Infrastructure as Code
+# Defines all cloud resources. No more clicking in AWS console.
+# Run: terraform init && terraform apply
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+variable "aws_region" {
+  default = "us-east-1"
+}
+
+variable "app_name" {
+  default = "model-router"
+}
+
+# Kubernetes cluster
+resource "aws_eks_cluster" "main" {
+  name     = "${var.app_name}-cluster"
+  role_arn = aws_iam_role.eks_role.arn
+
+  vpc_config {
+    subnet_ids = aws_subnet.private[*].id
+  }
+}
+
+# Worker nodes
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.app_name}-nodes"
+  node_role_arn   = aws_iam_role.node_role.arn
+  subnet_ids      = aws_subnet.private[*].id
+
+  scaling_config {
+    desired_size = 3
+    max_size     = 20
+    min_size     = 2
+  }
+
+  instance_types = ["t3.medium"]
+}
+
+# RDS PostgreSQL
+resource "aws_db_instance" "main" {
+  identifier     = "${var.app_name}-db"
+  engine         = "postgres"
+  engine_version = "16"
+  instance_class = "db.t3.medium"
+  
+  allocated_storage     = 100
+  storage_encrypted     = true
+  multi_az             = true  # High availability
+  backup_retention_period = 30
+  
+  db_name  = "router"
+  username = var.db_username
+  password = var.db_password
+  
+  vpc_security_group_ids = [aws_security_group.database.id]
+}
+
+# ElastiCache Redis
+resource "aws_elasticache_cluster" "main" {
+  cluster_id           = "${var.app_name}-cache"
+  engine              = "redis"
+  node_type           = "cache.t3.micro"
+  num_cache_nodes     = 2  # Primary + replica
+  parameter_group_name = "default.redis7"
+  port                = 6379
+  
+  subnet_group_name = aws_elasticache_subnet_group.main.name
+}
+
+# S3 for backups and artifacts
+resource "aws_s3_bucket" "backups" {
+  bucket = "${var.app_name}-backups-${data.aws_caller_identity.current.account_id}"
+  
+  versioning {
+    enabled = true
+  }
+  
+  lifecycle_rule {
+    enabled = true
+    expiration {
+      days = 90
+    }
+  }
+}
+
+# CloudFront CDN for static assets
+resource "aws_cloudfront_distribution" "main" {
+  origin {
+    domain_name = aws_lb.main.dns_name
+    origin_id   = "alb"
+  }
+  
+  enabled             = true
+  default_root_object = "index.html"
+  
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "alb"
+    
+    forwarded_values {
+      query_string = true
+      cookies {
+        forward = "all"
+      }
+    }
+    
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 3600
+    max_ttl                = 86400
+  }
+  
+  price_class = "PriceClass_All"
+}
+
+# IAM roles (abbreviated)
+resource "aws_iam_role" "eks_role" {
+  name = "${var.app_name}-eks-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "eks.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role" "node_role" {
+  name = "${var.app_name}-node-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+# Output the cluster endpoint
+output "cluster_endpoint" {
+  value = aws_eks_cluster.main.endpoint
+}
+
+output "database_endpoint" {
+  value = aws_db_instance.main.endpoint
+}
+
+output "redis_endpoint" {
+  value = aws_elasticache_cluster.main.cache_nodes[0].address
+}

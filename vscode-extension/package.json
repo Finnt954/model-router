@@ -1,0 +1,56 @@
+{
+    "name": "modelrouter",
+    "displayName": "ModelRouter - AI Code Assistant",
+    "description": "Intelligent AI model routing for coding. Auto-picks the best model for every task.",
+    "version": "2.0.0",
+    "publisher": "modelrouter",
+    "icon": "icon.png",
+    "repository": "https://github.com/Finnt954/model-router",
+    "engines": { "vscode": "^1.80.0" },
+    "categories": ["Machine Learning", "Programming Languages", "Other"],
+    "keywords": ["ai", "coding", "router", "claude", "deepseek", "model"],
+    "activationEvents": [
+        "onCommand:modelrouter.route",
+        "onCommand:modelrouter.routeFullFile",
+        "onCommand:modelrouter.explainCode",
+        "onCommand:modelrouter.fixBug",
+        "onCommand:modelrouter.refactor",
+        "onCommand:modelrouter.proveIt"
+    ],
+    "main": "./extension.js",
+    "contributes": {
+        "commands": [
+            { "command": "modelrouter.route", "title": "ModelRouter: Route Selection" },
+            { "command": "modelrouter.routeFullFile", "title": "ModelRouter: Analyze Full File" },
+            { "command": "modelrouter.explainCode", "title": "ModelRouter: Explain Code" },
+            { "command": "modelrouter.fixBug", "title": "ModelRouter: Fix Bug" },
+            { "command": "modelrouter.refactor", "title": "ModelRouter: Refactor" },
+            { "command": "modelrouter.proveIt", "title": "ModelRouter: Prove It (Test + Verify)" },
+            { "command": "modelrouter.changeModel", "title": "ModelRouter: Change Model Preference" }
+        ],
+        "menus": {
+            "editor/context": [
+                { "command": "modelrouter.route", "group": "navigation" },
+                { "command": "modelrouter.explainCode", "group": "navigation" },
+                { "command": "modelrouter.fixBug", "group": "navigation" },
+                { "command": "modelrouter.refactor", "group": "navigation" },
+                { "command": "modelrouter.proveIt", "group": "navigation" }
+            ]
+        },
+        "configuration": {
+            "title": "ModelRouter",
+            "properties": {
+                "modelrouter.apiUrl": {
+                    "type": "string",
+                    "default": "http://localhost:5000",
+                    "description": "ModelRouter API URL"
+                },
+                "modelrouter.apiKey": {
+                    "type": "string",
+                    "default": "demo-key-123",
+                    "description": "Your ModelRouter API key"
+                }
+            }
+        }
+    }
+}
