@@ -2,7 +2,11 @@
 AI Model Router - Classifies coding tasks and routes to the best model.
 With live API calls to DeepSeek V3 and Claude Sonnet 4.
 """
+from dotenv import load_dotenv
+load_dotenv()
+import os
 
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_KEY', '')
 import os
 import time
 from openai import OpenAI
