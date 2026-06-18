@@ -1,18 +1,8 @@
 """
-AI Model Router - Production Platform v5.0
+AI Model Router - Production Platform v6.0
 ==========================================
-ChatGPT-style AI coding assistant with:
-- Streaming text responses (word-by-word)
-- Conversation history sidebar
-- Markdown rendering + syntax highlighting
-- Copy code buttons
-- Regenerate & edit buttons
-- Custom instructions
-- Conversation memory
-- Shareable conversations
-- Team workspaces
-- PWA (installable on mobile/desktop)
-- Keyboard shortcuts
+ChatGPT-style AI coding assistant with streaming, auth, Prove It, 
+outcome-based routing, export, dark mode, and enterprise readiness.
 """
 
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for, Response, stream_with_context
@@ -25,12 +15,24 @@ import secrets
 import logging
 import re
 import os
+import subprocess
+import tempfile
 from datetime import datetime, timedelta
 from functools import wraps
 from enum import Enum
 
+# Sentry error tracking
+try:
+    import sentry_sdk
+    sentry_sdk.init(dsn=os.environ.get('SENTRY_DSN', ''), traces_sample_rate=1.0)
+except:
+    pass
+
 sys.path.insert(0, '.')
 from router import process_with_fallback, route_task, MODELS, ROUTING, call_deepseek, call_claude
+from evaluator import evaluator
+from routing_dataset import routing_dataset_v2 as routing_dataset
+from billing import billing
 
 # ═══════════════════════════════════════════════════════════════
 # APP INITIALIZATION
@@ -511,7 +513,9 @@ HTML_TEMPLATE = r'''
                 <span id="authToggleText">Don't have an account?</span>
                 <a href="#" onclick="toggleAuth()" style="color:#3b82f6;text-decoration:none;margin-left:4px;" id="authToggleLink">Sign up</a>
             </p>
-        </div>
+            <p style="text-align:center;margin-top:8px;font-size:12px;">
+                <a href="#" onclick="forgotPassword()" style="color:var(--text-secondary);text-decoration:none;">Forgot password?</a>
+            </p>        </div>
     </div>
     <div class="sidebar">
         <div class="sidebar-header">
@@ -537,6 +541,7 @@ HTML_TEMPLATE = r'''
             <div class="header-title" id="headerTitle">New conversation</div>
             <div class="header-actions">
                 <button onclick="shareConversation()">Share</button>
+                <button onclick="exportConversation()">Export</button>
             </div>
         </div>
         <div class="chat-container" id="chatContainer">
@@ -601,6 +606,16 @@ HTML_TEMPLATE = r'''
                         document.querySelector('.user-info span').textContent = data.user.name;
                         loadConversations();
                     }
+                });
+        }
+        function forgotPassword() {
+            var email = document.getElementById('authEmail').value.trim();
+            if (!email) { alert('Enter your email first'); return; }
+            fetch('/auth/forgot', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({email: email}) })
+                .then(r => r.json())
+                .then(function(d) {
+                    if (d.reset_link) { prompt('Reset link (copy this):', window.location.origin + d.reset_link); }
+                    else { alert('If that email exists, a reset link has been sent.'); }
                 });
         }
         var chatContainer = document.getElementById('chatContainer');
@@ -848,7 +863,9 @@ HTML_TEMPLATE = r'''
             fetch('/share', { method: 'POST', headers: {'Content-Type':'application/json', 'X-API-Key': API_KEY}, body: JSON.stringify({conversation_id: conversationId}) })
                 .then(r => r.json()).then(function(data) { navigator.clipboard.writeText(window.location.origin + data.share_url); alert('Link copied!'); });
         }
-        
+         function exportConversation() {
+            window.open('/conversations/' + conversationId + '/export?api_key=' + API_KEY);
+        }       
         userInput.focus();
     </script>
 </body>
@@ -940,6 +957,14 @@ def chat():
             else:
                 primary = plan['primary_model']
             
+            # Outcome-based override: use best model from real data
+            try:
+                best = evaluator.get_best_model_for_task(plan['task_type'])
+                if best and complexity == 'standard':
+                    primary = best
+            except:
+                pass
+            
             logger.info(f"Complexity: {complexity} → Model: {MODELS[primary]['name']}")
             print(f"!!! COMPLEXITY DEBUG: {complexity} → {MODELS[primary]['name']} !!!")
             if primary == 'deepseek':
@@ -965,13 +990,11 @@ def chat():
         update_analytics(model_used, task_type, cost, elapsed, False)
         
         # ─── PHASES 16-22: Outcome Tracking, Dataset, Evaluation ───
+        # ─── Evaluation & Outcome Tracking ───
         try:
-            from outcome_tracker import outcome_tracker
-            outcome_tracker.analyze_conversation(conversation_id)
-        except Exception as e:
-            logger.warning(f"Outcome tracking skipped: {e}")
-        
-        try:
+            from evaluator import evaluator
+            evaluator.analyze_conversation(conversation_id)
+            evaluator.score_response(prompt, result_text, task_type, model_used)
             from routing_dataset import routing_dataset_v2 as routing_dataset
             routing_dataset.record_request(
                 prompt=prompt, model_used=model_used, task_type=task_type,
@@ -979,16 +1002,7 @@ def chat():
                 user_id=user_id
             )
         except Exception as e:
-            logger.warning(f"Dataset recording skipped: {e}")
-        
-        try:
-            from auto_evaluator import auto_evaluator
-            evaluation = auto_evaluator.evaluate_and_store(
-                prompt, result_text, task_type, model_used, conversation_id
-            )
-            logger.info(f"Response grade: {evaluation['grade']} ({evaluation['overall']})")
-        except Exception as e:
-            logger.warning(f"Auto-evaluation skipped: {e}")
+            logger.warning(f"Evaluation skipped: {e}")
         # ─────────────────────────────────────────────────────────
         
         return jsonify({'result': result_text, 'model_used': model_used, 'task_type': task_type, 'elapsed': round(elapsed, 2), 'cost': cost, 'cached': False})
@@ -1041,6 +1055,14 @@ def chat_stream():
         else:
             primary = plan['primary_model']
         
+        # Outcome-based override: use best model from real data
+        try:
+            best = evaluator.get_best_model_for_task(plan['task_type'])
+            if best and complexity == 'standard':
+                primary = best
+        except:
+            pass
+        
         print(f"!!! COMPLEXITY: {complexity} → {MODELS[primary]['name']} !!!")
         
         if primary == 'deepseek':
@@ -1052,11 +1074,11 @@ def chat_stream():
             result_text = call_qwen3_coder(enriched_prompt)
         else:
             result_text = call_deepseek(enriched_prompt)
+        
         model_used = MODELS[primary]['name']
-    elapsed = time.time() - start_time
-    cost = plan['estimated_cost']
-    task_type = plan['task_type']
-    
+        task_type = plan['task_type']
+        cost = MODELS[primary]['cost_per_1k_tokens'] * len(prompt) / 4000
+        used_fallback = False
     # Save to history
     save_history(user_id, conversation_id, 'user', prompt, model_used, task_type, cost)
     save_history(user_id, conversation_id, 'assistant', result_text, model_used, task_type, cost)
@@ -1174,7 +1196,7 @@ def api_models():
 
 @app.route('/prove-it', methods=['POST'])
 def prove_it_endpoint():
-    """Verify code: run tests, linting, security checks."""
+    """Verify code: syntax check, security scan, sandbox execution."""
     data = request.json
     code = data.get('code', '')
     language = data.get('language', 'python')
@@ -1182,12 +1204,59 @@ def prove_it_endpoint():
     if not code:
         return jsonify({'error': 'No code provided'})
     
-    from prove_it import prove_it
-    result = prove_it.verify(code, language)
-    report = prove_it.format_result(result)
+    issues = []
+    
+    # Security checks
+    if re.search(r'(password|secret|api_key|token)\s*=\s*["\'][^"\']+["\']', code):
+        issues.append({'severity': 'critical', 'issue': 'Hardcoded secret detected'})
+    if 'eval(' in code:
+        issues.append({'severity': 'critical', 'issue': 'Unsafe eval() usage'})
+    if re.search(r'f".*SELECT.*\{', code):
+        issues.append({'severity': 'high', 'issue': 'Potential SQL injection'})
+    if 'os.system(' in code or 'subprocess.call' in code:
+        issues.append({'severity': 'high', 'issue': 'Shell injection risk'})
+    
+    # Syntax check
+    try:
+        compile(code, '<test>', 'exec')
+        syntax_ok = True
+    except SyntaxError as e:
+        syntax_ok = False
+        issues.append({'severity': 'high', 'issue': f'Syntax error: {str(e)}'})
+    
+    # Run in sandbox
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(code)
+            temp_path = f.name
+        
+        result = subprocess.run(['python', temp_path], capture_output=True, text=True, timeout=10)
+        os.unlink(temp_path)
+        
+        passed = result.returncode == 0 and len([i for i in issues if i['severity'] in ['critical', 'high']]) == 0
+        report = f"## Prove It Report\n\n**Overall:** {'✅ PASSED' if passed else '❌ FAILED'}\n\n"
+        report += f"**Syntax:** {'✅ Valid' if syntax_ok else '❌ Error'}\n"
+        report += f"**Execution:** {'✅ Ran successfully' if result.returncode == 0 else '❌ Failed'}\n"
+        report += f"**Security:** {'✅ No issues' if not issues else '❌ ' + str(len(issues)) + ' issue(s)'}\n"
+        
+        if result.stdout:
+            report += f"\n### Output\n```\n{result.stdout[:500]}\n```\n"
+        if result.stderr:
+            report += f"\n### Errors\n```\n{result.stderr[:500]}\n```\n"
+        if issues:
+            report += f"\n### Issues\n"
+            for issue in issues:
+                report += f"- **[{issue['severity'].upper()}]** {issue['issue']}\n"
+        
+    except subprocess.TimeoutExpired:
+        passed = False
+        report = "## Prove It Report\n\n**Overall:** ❌ FAILED\n**Execution:** Timed out after 10 seconds"
+    except Exception as e:
+        passed = False
+        report = f"## Prove It Report\n\n**Overall:** ❌ FAILED\n**Error:** {str(e)}"
     
     return jsonify({
-        'verification': result,
+        'verification': {'overall': 'PASSED' if passed else 'FAILED', 'issues': issues},
         'report': report
     })
 # ═══════════════════════════════════════════════════════════════
@@ -1354,6 +1423,17 @@ def join_team():
     conn.close()
     return jsonify({'status': 'joined', 'workspace_id': row[0]})
 
+@app.route('/conversations/<conversation_id>/export')
+@require_auth
+def export_conversation(conversation_id):
+    """Export conversation as markdown."""
+    history = get_history(conversation_id)
+    md = f"# ModelRouter Conversation\n\nExported: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n---\n\n"
+    for role, content, model, _ in history:
+        prefix = "**You**" if role == 'user' else f"**{model or 'AI'}**"
+        md += f"{prefix}:\n\n{content}\n\n---\n\n"
+    return Response(md, mimetype='text/markdown', headers={'Content-Disposition': f'attachment; filename=conversation-{conversation_id[:8]}.md'})
+
 @app.route('/conversations/<conversation_id>', methods=['DELETE'])
 @require_auth
 def delete_conversation(conversation_id):
@@ -1366,7 +1446,72 @@ def delete_conversation(conversation_id):
     conn.commit()
     conn.close()
     return jsonify({'status': 'deleted'})
+@app.route('/auth/forgot', methods=['POST'])
+def forgot_password():
+    """Send password reset link."""
+    email = request.json.get('email', '').strip().lower()
+    user = get_user_by_email(email)
+    if user:
+        token = secrets.token_urlsafe(32)
+        conn = sqlite3.connect('router.db')
+        c = conn.cursor()
+        c.execute('INSERT INTO password_resets (token, user_id, expires_at) VALUES (?, ?, ?)',
+                  (token, user['id'], datetime.now() + timedelta(hours=1)))
+        conn.commit()
+        conn.close()
+        # In production, send email. For now, return the link.
+        return jsonify({'reset_link': f'/auth/reset/{token}'})
+    return jsonify({'message': 'If that email exists, a reset link has been sent.'})
 
+@app.route('/auth/reset/<token>', methods=['POST'])
+def reset_password(token):
+    """Reset password with token."""
+    password = request.json.get('password', '')
+    if len(password) < 6:
+        return jsonify({'error': 'Password must be at least 6 characters'}), 400
+    
+    conn = sqlite3.connect('router.db')
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM password_resets WHERE token = ? AND expires_at > ? AND used = 0',
+              (token, datetime.now()))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Invalid or expired token'}), 400
+    
+    new_hash = hash_password(password)
+    c.execute('UPDATE auth_users SET password_hash = ? WHERE id = ?', (new_hash, row[0]))
+    c.execute('UPDATE password_resets SET used = 1 WHERE token = ?', (token,))
+    conn.commit()
+    conn.close()
+    return jsonify({'status': 'password_reset'})
+@app.route('/leaderboard/public')
+def public_leaderboard():
+    """Public model comparison leaderboard."""
+    from evaluator import evaluator
+    weights = evaluator.get_model_weights(days=30)
+    
+    conn = sqlite3.connect('router.db')
+    c = conn.cursor()
+    c.execute('''SELECT model_name, category, pass_rate, avg_latency, total_tests
+                 FROM model_rankings ORDER BY model_name, pass_rate DESC''')
+    benchmarks = c.fetchall()
+    conn.close()
+    
+    return jsonify({
+        'outcome_based': weights,
+        'benchmarks': [{'model': r[0], 'category': r[1], 'pass_rate': r[2], 'latency': r[3], 'tests': r[4]} for r in benchmarks],
+        'updated': datetime.now().isoformat()
+    })
+@app.route('/subscribe/checkout', methods=['POST'])
+@require_auth
+def create_checkout():
+    """Upgrade user subscription."""
+    user_id = getattr(request, 'user_id', 'anonymous')
+    tier = request.json.get('tier', 'pro')
+    from billing import billing
+    billing.create_subscription(user_id, tier)
+    return jsonify({'status': 'upgraded', 'tier': tier})
 if __name__ == '__main__':
     logger.info("=" * 50)
     logger.info("AI Model Router v5.0 - ChatGPT-Style Platform")

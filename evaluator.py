@@ -82,6 +82,33 @@ class Evaluator:
             outcomes.append({'success': success, 'model': ai_msg[2], 'has_code': has_code})
         
         return outcomes
-
+    def get_model_weights(self, days=7):
+        """Calculate routing weights from outcome data."""
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''SELECT model_selected, task_type, AVG(quality_score), COUNT(*)
+                     FROM routing_dataset_v2
+                     WHERE quality_score IS NOT NULL
+                     AND created_at > datetime('now', '-{} days')
+                     GROUP BY model_selected, task_type
+                     HAVING COUNT(*) > 5'''.format(days))
+        rows = c.fetchall()
+        conn.close()
+        
+        weights = {}
+        for model, task, score, count in rows:
+            if task not in weights:
+                weights[task] = {}
+            weights[task][model] = round(score, 2)
+        
+        return weights
+    
+    def get_best_model_for_task(self, task_type):
+        """Get the best model for a task based on real outcome data."""
+        weights = self.get_model_weights()
+        if task_type not in weights:
+            return None
+        best = max(weights[task_type], key=weights[task_type].get)
+        return best
 
 evaluator = Evaluator()
