@@ -9,10 +9,10 @@ from openai import OpenAI
 import anthropic
 
 # ─── CONFIGURATION ───────────────────────────────────────────────
-DEEPSEEK_API_KEY = "sk-0fa2cb1809d24b648d475ab0fef45907"
-ANTHROPIC_API_KEY = "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"
-OPENROUTER_KEY = "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"
-
+import os
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_KEY', '')
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_KEY', '')
+OPENROUTER_KEY = os.environ.get('OPENROUTER_KEY', '')
 # API clients
 deepseek_client = OpenAI(
     api_key=DEEPSEEK_API_KEY,
