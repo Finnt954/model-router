@@ -7,3 +7,4 @@ numpy
 scipy
 gunicorn
 python-dotenv
+requests

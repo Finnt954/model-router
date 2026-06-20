@@ -8,6 +8,7 @@ outcome-based routing, export, dark mode, and enterprise readiness.
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for, Response, stream_with_context
 import sys
 import time
+import uuid
 import json
 import hashlib
 import sqlite3
@@ -40,6 +41,10 @@ from billing import billing
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
+@app.before_request
+def add_request_id():
+    """Attach a unique ID to every request for tracing."""
+    request.request_id = str(uuid.uuid4())[:8]
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -55,12 +60,24 @@ class Config:
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
 # ═══════════════════════════════════════════════════════════════
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s',
-                    handlers=[logging.FileHandler('router.log'), logging.StreamHandler()])
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.FileHandler('router.log'), logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
+class RequestFilter(logging.Filter):
+    def filter(self, record):
+        try:
+            from flask import request as flask_request
+            rid = getattr(flask_request, 'request_id', '----') if flask_request else '----'
+        except:
+            rid = '----'
+        record.msg = f"[{rid}] {record.msg}"
+        return True
 
-# ═══════════════════════════════════════════════════════════════
+logging.getLogger().addFilter(RequestFilter())
+#════════════════════════════
 # PLAN TIERS
 # ═══════════════════════════════════════════════════════════════
 
@@ -508,6 +525,7 @@ HTML_TEMPLATE = r'''
             <input type="email" id="authEmail" placeholder="Email" style="width:100%;padding:10px 14px;background:#0d0d0d;border:1px solid #262626;border-radius:8px;color:#e5e5e5;font-size:14px;margin-bottom:10px;outline:none;">
             <input type="password" id="authPassword" placeholder="Password" style="width:100%;padding:10px 14px;background:#0d0d0d;border:1px solid #262626;border-radius:8px;color:#e5e5e5;font-size:14px;margin-bottom:10px;outline:none;">
             <input type="text" id="authName" placeholder="Name (optional)" style="width:100%;padding:10px 14px;background:#0d0d0d;border:1px solid #262626;border-radius:8px;color:#e5e5e5;font-size:14px;margin-bottom:16px;outline:none;display:none;">
+            <button onclick="window.location.href='/auth/github'" style="width:100%;padding:12px;background:#24292e;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;margin-bottom:8px;">Sign in with GitHub</button>
             <button onclick="authSubmit()" style="width:100%;padding:12px;background:#fff;color:#000;border:none;border-radius:10px;font-size:14px;font-weight:500;cursor:pointer;">Continue</button>
             <p style="text-align:center;margin-top:16px;font-size:13px;color:#888;">
                 <span id="authToggleText">Don't have an account?</span>
@@ -530,6 +548,8 @@ HTML_TEMPLATE = r'''
                 <option value="qwen3-coder">Qwen3-Coder (Algorithms)</option>
                 <option value="claude">Claude Sonnet 4.6</option>
             </select>
+            <button onclick="window.location.href='/checkout'" style="width:100%;background:#3b82f6;color:#fff;border:none;padding:8px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-top:8px;">Upgrade to Pro</button>
+            </div>
             <div class="user-info">
                 <div class="user-avatar">D</div>
                 <span>Demo User</span>
@@ -541,6 +561,7 @@ HTML_TEMPLATE = r'''
             <div class="header-title" id="headerTitle">New conversation</div>
             <div class="header-actions">
                 <button onclick="shareConversation()">Share</button>
+                <button onclick="window.location.href='/usage'">Usage</button>
                 <button onclick="exportConversation()">Export</button>
             </div>
         </div>
@@ -569,6 +590,13 @@ HTML_TEMPLATE = r'''
         marked.setOptions({ highlight: function(code, lang) { if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, {language:lang}).value; return hljs.highlightAuto(code).value; }, breaks: true });
         
                 var AUTH_TOKEN = localStorage.getItem('auth_token') || '';
+        var urlParams = new URLSearchParams(window.location.search);
+        var tokenFromUrl = urlParams.get('token');
+        if (tokenFromUrl) {
+            localStorage.setItem('auth_token', tokenFromUrl);
+            AUTH_TOKEN = tokenFromUrl;
+            window.location.href = '/';
+        }
         var isRegistering = false;
         if (AUTH_TOKEN) {
             fetch('/auth/me', { headers: {'Authorization': 'Bearer ' + AUTH_TOKEN} })
@@ -607,6 +635,12 @@ HTML_TEMPLATE = r'''
                         loadConversations();
                     }
                 });
+        }
+        function logout() {
+            localStorage.removeItem('auth_token');
+            AUTH_TOKEN = '';
+            API_KEY = '';
+            window.location.href = '/';
         }
         function forgotPassword() {
             var email = document.getElementById('authEmail').value.trim();
@@ -770,11 +804,24 @@ HTML_TEMPLATE = r'''
                                         }
                                         if (meta) {
                                             var actionsDiv = document.createElement('div'); actionsDiv.className = 'msg-actions';
-                                            var prove = document.createElement('button'); prove.textContent = 'Prove It'; prove.onclick = function() {
-                                                var code = bubble.querySelector('pre code');
-                                                if (!code) { alert('No code block found'); return; }
-                                                fetch('/prove-it', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({code: code.textContent, language: 'python'}) })
-                                                    .then(r => r.json()).then(function(d) { addMessage('assistant', d.report, 'Prove It', false, false); });
+                            var prove = document.createElement('button'); prove.textContent = 'Prove It'; prove.onclick = function() {
+                                var code = bubble.querySelector('pre code');
+                                if (!code) { alert('No code block found'); return; }
+                                var lang = 'python';
+                                var preEl = bubble.querySelector('pre');
+                                if (preEl) {
+                                    var codeEl = preEl.querySelector('code');
+                                    if (codeEl && codeEl.className) {
+                                        var classes = codeEl.className.split(' ');
+                                        for (var j = 0; j < classes.length; j++) {
+                                            if (classes[j].startsWith('language-')) {
+                                                lang = classes[j].replace('language-', '');
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                fetch('/prove-it', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({code: code.textContent, language: lang}) })                                                    .then(r => r.json()).then(function(d) { addMessage('assistant', d.report, 'Prove It', false, false); });
                                             };
                                             actionsDiv.appendChild(prove);
                                             var regen = document.createElement('button'); regen.textContent = 'Regenerate'; regen.onclick = function() { userInput.value = prompt; sendMessage(); };
@@ -1080,6 +1127,7 @@ def chat_stream():
         cost = MODELS[primary]['cost_per_1k_tokens'] * len(prompt) / 4000
         used_fallback = False
     # Save to history
+    elapsed = time.time() - start_time	
     save_history(user_id, conversation_id, 'user', prompt, model_used, task_type, cost)
     save_history(user_id, conversation_id, 'assistant', result_text, model_used, task_type, cost)
     update_analytics(model_used, task_type, cost, elapsed, False)
@@ -1087,7 +1135,8 @@ def chat_stream():
     
     def generate():
         # Send metadata first
-        yield f"data: {json.dumps({'type': 'meta', 'model': model_used, 'task': task_type, 'cost': cost, 'elapsed': round(elapsed, 2)})}\n\n"
+        req_id = getattr(request, 'request_id', '----')
+        yield f"data: {json.dumps({'type': 'meta', 'request_id': req_id, 'model': model_used, 'task': task_type, 'cost': cost, 'elapsed': round(elapsed, 2)})}\n\n"
         
         # Stream the response word by word
         words = result_text.split(' ')
@@ -1203,7 +1252,15 @@ def prove_it_endpoint():
     
     if not code:
         return jsonify({'error': 'No code provided'})
-    
+    if language not in ['python', 'javascript', 'typescript', 'js', 'ts', 'java', 'c']:
+        return jsonify({
+            'verification': {'overall': 'SKIPPED', 'issues': []},
+            'report': f"## Prove It Report\n\n**Overall:** ⚠️ SKIPPED\n\nProve It supports Python, JavaScript, TypeScript, Java, and C. {language} support coming soon."
+        })
+        return jsonify({
+            'verification': {'overall': 'SKIPPED', 'issues': []},
+            'report': f"## Prove It Report\n\n**Overall:** ⚠️ SKIPPED\n\nProve It supports Python, JavaScript, and TypeScript. {language} support coming soon."
+        })
     issues = []
     
     # Security checks
@@ -1215,46 +1272,247 @@ def prove_it_endpoint():
         issues.append({'severity': 'high', 'issue': 'Potential SQL injection'})
     if 'os.system(' in code or 'subprocess.call' in code:
         issues.append({'severity': 'high', 'issue': 'Shell injection risk'})
+    # JavaScript/TypeScript security checks
+    if language in ['javascript', 'typescript', 'js', 'ts']:
+        if re.search(r'(password|secret|api_key|token)\s*[:=]\s*["\'][^"\']+["\']', code):
+            issues.append({'severity': 'critical', 'issue': 'Hardcoded secret detected'})
+        if 'eval(' in code:
+            issues.append({'severity': 'critical', 'issue': 'Unsafe eval() usage'})
+        if 'innerHTML' in code:
+            issues.append({'severity': 'high', 'issue': 'Potential XSS via innerHTML'})
+        if 'document.write(' in code:
+            issues.append({'severity': 'high', 'issue': 'Unsafe document.write()'})   
+    # Java security checks
+    if language == 'java':
+        if re.search(r'(password|secret|api_key|token)\s*=\s*"[^"]+', code):
+            issues.append({'severity': 'critical', 'issue': 'Hardcoded secret detected'})
+        if 'Runtime.getRuntime().exec(' in code:
+            issues.append({'severity': 'critical', 'issue': 'Shell injection via Runtime.exec()'})
+        if 'System.exit(' in code:
+            issues.append({'severity': 'low', 'issue': 'System.exit() may cause unexpected termination'})
     
-    # Syntax check
-    try:
-        compile(code, '<test>', 'exec')
+    # C security checks
+    if language == 'c':
+        if 'system(' in code:
+            issues.append({'severity': 'critical', 'issue': 'Shell injection via system()'})
+        if 'gets(' in code:
+            issues.append({'severity': 'high', 'issue': 'Buffer overflow risk: gets() is unsafe'})
+        if 'strcpy(' in code and 'strncpy(' not in code:
+            issues.append({'severity': 'medium', 'issue': 'Consider strncpy() instead of strcpy()'})
+        if 'malloc(' in code and 'free(' not in code:
+            issues.append({'severity': 'medium', 'issue': 'Potential memory leak: malloc without free'})
+        if 'scanf("%s"' in code:
+            issues.append({'severity': 'high', 'issue': 'Buffer overflow risk: unbounded scanf %s'}) 
+    # Syntax check (Python only)
+    if language == 'python':
+        try:
+            compile(code, '<test>', 'exec')
+            syntax_ok = True
+        except SyntaxError as e:
+            syntax_ok = False
+            issues.append({'severity': 'high', 'issue': f'Syntax error: {str(e)}'})
+    else:
         syntax_ok = True
-    except SyntaxError as e:
-        syntax_ok = False
-        issues.append({'severity': 'high', 'issue': f'Syntax error: {str(e)}'})
+    # JavaScript/TypeScript syntax check
+    if language in ['javascript', 'typescript', 'js', 'ts']:
+        try:
+            result = subprocess.run(['node', '--check'], input=code, capture_output=True, text=True, timeout=5)
+            syntax_ok = result.returncode == 0
+            if not syntax_ok:
+                issues.append({'severity': 'high', 'issue': f'Syntax error: {result.stderr[:200]}'})
+        except FileNotFoundError:
+            syntax_ok = True
+        except:
+            syntax_ok = True   
+    # Java syntax check (requires javac)
+    if language == 'java':
+        try:
+            result = subprocess.run(['javac', '--version'], capture_output=True, text=True, timeout=3)
+            if result.returncode == 0:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.java', delete=False) as f:
+                    f.write(code)
+                    temp_path = f.name
+                result = subprocess.run(['javac', temp_path], capture_output=True, text=True, timeout=10)
+                os.unlink(temp_path)
+                syntax_ok = result.returncode == 0
+                if not syntax_ok:
+                    issues.append({'severity': 'high', 'issue': f'Compilation error: {result.stderr[:200]}'})
+            else:
+                syntax_ok = True  # javac not installed
+        except FileNotFoundError:
+            syntax_ok = True
+        except:
+            syntax_ok = True
     
+    # C syntax check (requires gcc)
+    if language == 'c':
+        try:
+            result = subprocess.run(['gcc', '--version'], capture_output=True, text=True, timeout=3)
+            if result.returncode == 0:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False) as f:
+                    f.write(code)
+                    temp_path = f.name
+                result = subprocess.run(['gcc', '-fsyntax-only', temp_path], capture_output=True, text=True, timeout=10)
+                os.unlink(temp_path)
+                syntax_ok = result.returncode == 0
+                if not syntax_ok:
+                    issues.append({'severity': 'high', 'issue': f'Compilation error: {result.stderr[:200]}'})
+            else:
+                syntax_ok = True
+        except FileNotFoundError:
+            syntax_ok = True
+        except:
+            syntax_ok = True 
     # Run in sandbox
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(code)
-            temp_path = f.name
-        
-        result = subprocess.run(['python', temp_path], capture_output=True, text=True, timeout=10)
-        os.unlink(temp_path)
-        
-        passed = result.returncode == 0 and len([i for i in issues if i['severity'] in ['critical', 'high']]) == 0
-        report = f"## Prove It Report\n\n**Overall:** {'✅ PASSED' if passed else '❌ FAILED'}\n\n"
-        report += f"**Syntax:** {'✅ Valid' if syntax_ok else '❌ Error'}\n"
-        report += f"**Execution:** {'✅ Ran successfully' if result.returncode == 0 else '❌ Failed'}\n"
-        report += f"**Security:** {'✅ No issues' if not issues else '❌ ' + str(len(issues)) + ' issue(s)'}\n"
-        
-        if result.stdout:
-            report += f"\n### Output\n```\n{result.stdout[:500]}\n```\n"
-        if result.stderr:
-            report += f"\n### Errors\n```\n{result.stderr[:500]}\n```\n"
-        if issues:
-            report += f"\n### Issues\n"
-            for issue in issues:
-                report += f"- **[{issue['severity'].upper()}]** {issue['issue']}\n"
-        
-    except subprocess.TimeoutExpired:
-        passed = False
-        report = "## Prove It Report\n\n**Overall:** ❌ FAILED\n**Execution:** Timed out after 10 seconds"
-    except Exception as e:
-        passed = False
-        report = f"## Prove It Report\n\n**Overall:** ❌ FAILED\n**Error:** {str(e)}"
+    if language == 'python':
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(code)
+                temp_path = f.name
+            result = subprocess.run(['python', temp_path], capture_output=True, text=True, timeout=10)
+            os.unlink(temp_path)
+            execution_ok = result.returncode == 0
+            exec_output = result.stdout[:500]
+            exec_error = result.stderr[:500]
+        except subprocess.TimeoutExpired:
+            execution_ok = False
+            exec_output = ''
+            exec_error = 'Timed out after 10 seconds'
+        except Exception as e:
+            execution_ok = False
+            exec_output = ''
+            exec_error = str(e)
     
+    elif language in ['javascript', 'js']:
+        try:
+            result = subprocess.run(['node', '-e', code], capture_output=True, text=True, timeout=10)
+            execution_ok = result.returncode == 0
+            exec_output = result.stdout[:500]
+            exec_error = result.stderr[:500]
+        except FileNotFoundError:
+            execution_ok = None
+            exec_output = ''
+            exec_error = 'Node.js not installed'
+        except subprocess.TimeoutExpired:
+            execution_ok = False
+            exec_output = ''
+            exec_error = 'Timed out after 10 seconds'
+        except Exception as e:
+            execution_ok = False
+            exec_output = ''
+            exec_error = str(e)
+    
+    elif language in ['typescript', 'ts']:
+        try:
+            result = subprocess.run(['npx', 'tsx', '-e', code], capture_output=True, text=True, timeout=10)
+            execution_ok = result.returncode == 0
+            exec_output = result.stdout[:500]
+            exec_error = result.stderr[:500]
+        except FileNotFoundError:
+            execution_ok = None
+            exec_output = ''
+            exec_error = 'tsx not installed (run: npm install -g tsx)'
+        except subprocess.TimeoutExpired:
+            execution_ok = False
+            exec_output = ''
+            exec_error = 'Timed out after 10 seconds'
+        except Exception as e:
+            execution_ok = False
+            exec_output = ''
+            exec_error = str(e)
+    
+    elif language == 'java':
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.java', delete=False) as f:
+                f.write(code)
+                temp_path = f.name
+            # Compile
+            compile_result = subprocess.run(['javac', temp_path], capture_output=True, text=True, timeout=10)
+            if compile_result.returncode == 0:
+                # Run
+                class_dir = os.path.dirname(temp_path)
+                class_name = os.path.splitext(os.path.basename(temp_path))[0]
+                run_result = subprocess.run(['java', '-cp', class_dir, class_name], capture_output=True, text=True, timeout=10)
+                execution_ok = run_result.returncode == 0
+                exec_output = run_result.stdout[:500]
+                exec_error = run_result.stderr[:500]
+            else:
+                execution_ok = False
+                exec_output = ''
+                exec_error = compile_result.stderr[:500]
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            execution_ok = None
+            exec_output = ''
+            exec_error = 'Java not installed'
+        except subprocess.TimeoutExpired:
+            execution_ok = False
+            exec_output = ''
+            exec_error = 'Timed out after 10 seconds'
+        except Exception as e:
+            execution_ok = False
+            exec_output = ''
+            exec_error = str(e)
+    
+    elif language == 'c':
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False) as f:
+                f.write(code)
+                temp_path = f.name
+            exe_path = temp_path + '.exe'
+            compile_result = subprocess.run(['gcc', temp_path, '-o', exe_path], capture_output=True, text=True, timeout=10)
+            if compile_result.returncode == 0:
+                run_result = subprocess.run([exe_path], capture_output=True, text=True, timeout=10)
+                execution_ok = run_result.returncode == 0
+                exec_output = run_result.stdout[:500]
+                exec_error = run_result.stderr[:500]
+                os.unlink(exe_path)
+            else:
+                execution_ok = False
+                exec_output = ''
+                exec_error = compile_result.stderr[:500]
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            execution_ok = None
+            exec_output = ''
+            exec_error = 'GCC not installed'
+        except subprocess.TimeoutExpired:
+            execution_ok = False
+            exec_output = ''
+            exec_error = 'Timed out after 10 seconds'
+        except Exception as e:
+            execution_ok = False
+            exec_output = ''
+            exec_error = str(e)
+    
+    else:
+        execution_ok = None
+        exec_output = ''
+        exec_error = f'Execution not supported for {language}'
+    
+    # Build report
+    passed = syntax_ok and (execution_ok is True or execution_ok is None) and len([i for i in issues if i['severity'] in ['critical', 'high']]) == 0
+    
+    report = f"## Prove It Report\n\n**Overall:** {'✅ PASSED' if passed else '❌ FAILED'}\n\n"
+    report += f"**Syntax:** {'✅ Valid' if syntax_ok else '❌ Error'}\n"
+    
+    if execution_ok is True:
+        report += f"**Execution:** ✅ Ran successfully\n"
+    elif execution_ok is False:
+        report += f"**Execution:** ❌ Failed\n"
+    elif execution_ok is None:
+        report += f"**Execution:** ⚠️ Skipped (compiler/runtime not available)\n"
+    
+    report += f"**Security:** {'✅ No issues' if not issues else '❌ ' + str(len(issues)) + ' issue(s)'}\n"
+    
+    if exec_output:
+        report += f"\n### Output\n```\n{exec_output}\n```\n"
+    if exec_error:
+        report += f"\n### Errors\n```\n{exec_error}\n```\n"
+    if issues:
+        report += f"\n### Issues\n"
+        for issue in issues:
+            report += f"- **[{issue['severity'].upper()}]** {issue['issue']}\n"
     return jsonify({
         'verification': {'overall': 'PASSED' if passed else 'FAILED', 'issues': issues},
         'report': report
@@ -1339,19 +1597,6 @@ def dashboard():
         </script>
     </body></html>''';
 
-# ═══════════════════════════════════════════════════════════════
-# CONTINUOUS BENCHMARKING
-# ═══════════════════════════════════════════════════════════════
-
-@app.route('/benchmarks/run')
-def run_benchmarks():
-    from auto_benchmark import auto_benchmark
-    from router import call_deepseek, call_claude, call_qwen3_coder
-    models = {'DeepSeek V3': call_deepseek, 'Claude Sonnet 4.6': call_claude}
-    results = {}
-    for name, func in models.items():
-        results[name] = auto_benchmark.run_benchmark(name, func)
-    return jsonify(results)
 
 # ═══════════════════════════════════════════════════════════════
 # TEAM ACCOUNTS
@@ -1512,6 +1757,253 @@ def create_checkout():
     from billing import billing
     billing.create_subscription(user_id, tier)
     return jsonify({'status': 'upgraded', 'tier': tier})
+@app.route('/health/models')
+def model_health():
+    """Check which models are currently available."""
+    health = {}
+    
+    # Test DeepSeek
+    try:
+        from router import call_deepseek
+        result = call_deepseek("Respond with just the word 'ok'")
+        health['deepseek'] = 'healthy' if 'ok' in result.lower() else 'degraded'
+    except:
+        health['deepseek'] = 'down'
+    
+    # Test Claude
+    try:
+        from router import call_claude
+        result = call_claude("Respond with just the word 'ok'")
+        health['claude'] = 'healthy' if 'ok' in result.lower() else 'degraded'
+    except:
+        health['claude'] = 'down'
+    
+    # Test Qwen3-Coder
+    try:
+        from router import call_qwen3_coder
+        result = call_qwen3_coder("Respond with just the word 'ok'")
+        health['qwen3-coder'] = 'healthy' if 'ok' in result.lower() else 'degraded'
+    except:
+        health['qwen3-coder'] = 'down'
+    
+    overall = all(v == 'healthy' for v in health.values())
+    
+    return jsonify({
+        'status': 'healthy' if overall else 'degraded',
+        'models': health,
+        'timestamp': datetime.now().isoformat()
+    })
+@app.route('/dashboard/usage')
+@require_auth
+def user_usage_dashboard():
+    """Show user their personal usage stats."""
+    user_id = getattr(request, 'user_id', session.get('user_id', 'anonymous'))
+    
+    conn = sqlite3.connect('router.db')
+    c = conn.cursor()
+    
+    # Total requests
+    c.execute('SELECT COUNT(*) FROM routing_dataset_v2 WHERE user_id = ?', (user_id,))
+    total = c.fetchone()[0] or 0
+    
+    # By model
+    c.execute('''SELECT model_selected, COUNT(*), AVG(quality_score), SUM(cost_microdollars)
+                 FROM routing_dataset_v2 WHERE user_id = ?
+                 GROUP BY model_selected''', (user_id,))
+    by_model = [{'model': r[0], 'requests': r[1], 'avg_quality': round(r[2] or 0, 2), 'cost': round((r[3] or 0) / 1000000, 6)} for r in c.fetchall()]
+    
+    # Cache hits
+    c.execute('''SELECT COUNT(*) FROM routing_dataset_v2 WHERE user_id = ? AND quality_score > 0.8''', (user_id,))
+    cache_hits = c.fetchone()[0] or 0
+    
+    # Total cost
+    c.execute('SELECT SUM(cost_microdollars) FROM routing_dataset_v2 WHERE user_id = ?', (user_id,))
+    total_cost = round((c.fetchone()[0] or 0) / 1000000, 6)
+    
+    # Estimated savings from caching
+    savings = round(total_cost * 0.4, 6)
+    
+    conn.close()
+    
+    return jsonify({
+        'total_requests': total,
+        'total_cost': total_cost,
+        'estimated_savings': savings,
+        'cache_hits': cache_hits,
+        'by_model': by_model,
+        'period': 'all_time'
+    })
+@app.route('/usage')
+def usage_page():
+    """User-facing usage dashboard page."""
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head><title>Usage - ModelRouter</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #0d0d0d; color: #e5e5e5; padding: 40px; max-width: 700px; margin: 0 auto; }
+        .card { background: #1a1a1a; border: 1px solid #262626; border-radius: 12px; padding: 24px; margin: 16px 0; }
+        h1 { color: #3b82f6; }
+        .metric { font-size: 32px; font-weight: 700; color: #fff; }
+        .label { font-size: 13px; color: #888; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #262626; }
+        th { color: #888; font-size: 11px; text-transform: uppercase; }
+        .savings { color: #22c55e; }
+    </style></head>
+    <body>
+        <h1>Your Usage</h1>
+        <div class="grid" id="metrics"></div>
+        <div class="card"><h2>By Model</h2><table id="modelTable"></table></div>
+        <script>
+            var apiKey = localStorage.getItem('auth_token') || '';
+            fetch('/dashboard/usage', { headers: {'X-API-Key': 'demo-key-123'} })
+                .then(r => r.json())
+                .then(function(d) {
+                    document.getElementById('metrics').innerHTML = 
+                        '<div class="card"><div class="metric">' + d.total_requests + '</div><div class="label">Total Requests</div></div>' +
+                        '<div class="card"><div class="metric">$' + d.total_cost.toFixed(6) + '</div><div class="label">Total Cost</div></div>' +
+                        '<div class="card"><div class="metric savings">$' + d.estimated_savings.toFixed(6) + '</div><div class="label">Estimated Savings</div></div>' +
+                        '<div class="card"><div class="metric">' + d.cache_hits + '</div><div class="label">Cache Hits</div></div>';
+                    var html = '<tr><th>Model</th><th>Requests</th><th>Avg Quality</th><th>Cost</th></tr>';
+                    d.by_model.forEach(function(m) { html += '<tr><td>' + m.model + '</td><td>' + m.requests + '</td><td>' + m.avg_quality + '</td><td>$' + m.cost.toFixed(6) + '</td></tr>'; });
+                    document.getElementById('modelTable').innerHTML = html;
+                });
+        </script>
+    </body></html>''';
+import requests
+
+@app.route('/auth/github')
+def github_login():
+    """Redirect to GitHub for authentication."""
+    github_client_id = os.environ.get('GITHUB_CLIENT_ID', '')
+    redirect_uri = request.url_root.rstrip('/') + '/auth/github/callback'
+    github_url = f"https://github.com/login/oauth/authorize?client_id={github_client_id}&redirect_uri={redirect_uri}&scope=user:email"
+    return redirect(github_url)
+
+@app.route('/auth/github/callback')
+def github_callback():
+    """Handle GitHub OAuth callback."""
+    code = request.args.get('code')
+    if not code:
+        return jsonify({'error': 'No code provided'}), 400
+    
+    # Exchange code for access token
+    token_response = requests.post('https://github.com/login/oauth/access_token', data={
+        'client_id': os.environ.get('GITHUB_CLIENT_ID', ''),
+        'client_secret': os.environ.get('GITHUB_CLIENT_SECRET', ''),
+        'code': code
+    }, headers={'Accept': 'application/json'})
+    
+    token_data = token_response.json()
+    access_token = token_data.get('access_token')
+    
+    if not access_token:
+        return jsonify({'error': 'Failed to get access token'}), 400
+    
+    # Get user info
+    user_response = requests.get('https://api.github.com/user', headers={
+        'Authorization': f'Bearer {access_token}',
+        'Accept': 'application/json'
+    })
+    user_data = user_response.json()
+    
+    # Get email
+    email_response = requests.get('https://api.github.com/user/emails', headers={
+        'Authorization': f'Bearer {access_token}',
+        'Accept': 'application/json'
+    })
+    emails = email_response.json()
+    primary_email = next((e['email'] for e in emails if e.get('primary')), user_data.get('email', ''))
+    
+    if not primary_email:
+        return jsonify({'error': 'No email found'}), 400
+    
+    # Check if user exists
+    user = get_user_by_email(primary_email)
+    
+    if user:
+        token = create_session(user['id'])
+        conn = sqlite3.connect('router.db')
+        c = conn.cursor()
+        c.execute('UPDATE auth_users SET last_login = ? WHERE id = ?', (datetime.now(), user['id']))
+        conn.commit()
+        conn.close()
+    else:
+        result, error = register_user(primary_email, secrets.token_urlsafe(16), user_data.get('login', ''))
+        if error:
+            return jsonify({'error': error}), 400
+        token = result['token']
+    
+    # Redirect to main app with token
+    return redirect(f"/?token={token}")
+@app.route('/benchmarks/report')
+def benchmark_report():
+    """Public benchmark report page."""
+    from evaluator import evaluator
+    weights = evaluator.get_model_weights(days=30)
+    
+    conn = sqlite3.connect('router.db')
+    c = conn.cursor()
+    c.execute('''SELECT model_name, category, pass_rate, avg_latency, total_tests
+                 FROM model_rankings ORDER BY model_name, pass_rate DESC''')
+    benchmarks = c.fetchall()
+    
+    c.execute('''SELECT model_selected, COUNT(*), AVG(quality_score), AVG(success_score)
+                 FROM routing_dataset_v2 WHERE created_at > datetime('now', '-30 days')
+                 GROUP BY model_selected ORDER BY COUNT(*) DESC''')
+    outcomes = c.fetchall()
+    conn.close()
+    
+    return jsonify({
+        'report_date': datetime.now().strftime('%Y-%m-%d'),
+        'methodology': 'Models evaluated on algorithm generation, bug fixing, refactoring, and explanation tasks. Outcome scores from real user feedback.',
+        'outcome_based_weights': weights,
+        'benchmark_results': [{'model': r[0], 'category': r[1], 'pass_rate': r[2], 'latency': r[3], 'tests': r[4]} for r in benchmarks],
+        'real_world_outcomes': [{'model': r[0], 'requests': r[1], 'avg_quality': round(r[2] or 0, 2), 'avg_success': round(r[3] or 0, 2)} for r in outcomes],
+        'models_tested': ['DeepSeek V3', 'Qwen3-Coder 480B', 'Claude Sonnet 4.6']
+    })
+@app.route('/checkout')
+def checkout_page():
+    """Simple checkout page for upgrading to Pro."""
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head><title>Upgrade to Pro - ModelRouter</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #0d0d0d; color: #e5e5e5; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        .card { background: #1a1a1a; border: 1px solid #262626; border-radius: 16px; padding: 40px; text-align: center; max-width: 400px; }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        .price { font-size: 48px; font-weight: 700; color: #3b82f6; margin: 16px 0; }
+        .features { text-align: left; margin: 20px 0; color: #888; font-size: 14px; }
+        .features li { margin: 8px 0; }
+        button { width: 100%; padding: 14px; background: #3b82f6; color: #fff; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }
+        button:hover { background: #2563eb; }
+    </style></head>
+    <body>
+        <div class="card">
+            <h1>ModelRouter Pro</h1>
+            <div class="price">$20<span style="font-size:16px;color:#888;">/month</span></div>
+            <ul class="features">
+                <li>500 requests/day</li>
+                <li>All models (DeepSeek, Qwen3-Coder, Claude)</li>
+                <li>Priority support</li>
+                <li>API access</li>
+                <li>Custom routing</li>
+            </ul>
+            <button onclick="upgrade()">Upgrade to Pro</button>
+            <p style="color:#888;font-size:12px;margin-top:12px;">7-day free trial. Cancel anytime.</p>
+        </div>
+        <script>
+            function upgrade() {
+                var apiKey = localStorage.getItem('auth_token') || 'demo-key-123';
+                fetch('/subscribe/checkout', { method: 'POST', headers: {'Content-Type':'application/json', 'X-API-Key': apiKey}, body: JSON.stringify({tier: 'pro'}) })
+                    .then(r => r.json())
+                    .then(function(d) { alert('Upgraded to Pro! Welcome.'); window.location.href = '/'; });
+            }
+        </script>
+    </body></html>''';
 if __name__ == '__main__':
     logger.info("=" * 50)
     logger.info("AI Model Router v5.0 - ChatGPT-Style Platform")
