@@ -552,8 +552,6 @@ HTML_TEMPLATE = r'''
     <option value="claude">Claude Sonnet (Production)</option>
     <option value="claude-opus">Claude Opus (Deep Research)</option>
 </select>
-            </select>
-            <button onclick="window.location.href='/checkout'" style="width:100%;background:#3b82f6;color:#fff;border:none;padding:8px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-top:8px;">Upgrade to Pro</button>
             </div>
             <div class="user-info">
                 <div class="user-avatar">D</div>
