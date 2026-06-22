@@ -30,7 +30,7 @@ except:
     pass
 
 sys.path.insert(0, '.')
-from router import process_with_fallback, route_task, MODELS, ROUTING, call_deepseek, call_claude
+from router import process_with_fallback, route_task, MODELS, ROUTING, call_deepseek, call_claude, call_qwen3_coder, call_claude_opus, call_gemini, call_mistral
 from evaluator import evaluator
 from routing_dataset import routing_dataset_v2 as routing_dataset
 from billing import billing
@@ -542,11 +542,15 @@ HTML_TEMPLATE = r'''
         <button class="new-chat-btn" onclick="newChat()">+ New chat</button>
         <div class="conversation-list" id="conversationList"></div>
         <div class="sidebar-footer">
-            <select id="modelOverride" onchange="updateBadge()">
-                <option value="auto">Auto-select model</option>
-                <option value="deepseek">DeepSeek V3</option>
-                <option value="qwen3-coder">Qwen3-Coder (Algorithms)</option>
-                <option value="claude">Claude Sonnet 4.6</option>
+<select id="modelOverride" onchange="updateBadge()">
+    <option value="auto">Auto-select</option>
+    <option value="gemini">Gemini 2.5 Flash (Fastest)</option>
+    <option value="deepseek">DeepSeek V3 (Cheap)</option>
+    <option value="qwen3-coder">Qwen3-Coder (Algorithms)</option>
+    <option value="mistral">Mistral Large (General)</option>
+    <option value="claude">Claude Sonnet (Production)</option>
+    <option value="claude-opus">Claude Opus (Deep Research)</option>
+</select>
             </select>
             <button onclick="window.location.href='/checkout'" style="width:100%;background:#3b82f6;color:#fff;border:none;padding:8px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;margin-top:8px;">Upgrade to Pro</button>
             </div>
@@ -804,30 +808,124 @@ HTML_TEMPLATE = r'''
                                         }
                                         if (meta) {
                                             var actionsDiv = document.createElement('div'); actionsDiv.className = 'msg-actions';
-                            var prove = document.createElement('button'); prove.textContent = 'Prove It'; prove.onclick = function() {
-                                var code = bubble.querySelector('pre code');
-                                if (!code) { alert('No code block found'); return; }
-                                var lang = 'python';
-                                var preEl = bubble.querySelector('pre');
-                                if (preEl) {
-                                    var codeEl = preEl.querySelector('code');
-                                    if (codeEl && codeEl.className) {
-                                        var classes = codeEl.className.split(' ');
-                                        for (var j = 0; j < classes.length; j++) {
-                                            if (classes[j].startsWith('language-')) {
-                                                lang = classes[j].replace('language-', '');
-                                                break;
-                                            }
-                                        }
+                                        var prove = document.createElement('button'); prove.textContent = 'Review'; prove.onclick = function() {
+                        var code = bubble.querySelector('pre code');
+                        if (!code) { alert('No code block found'); return; }
+                        var lang = 'python';
+                        var preEl = bubble.querySelector('pre');
+                        if (preEl) {
+                            var codeEl = preEl.querySelector('code');
+                            if (codeEl && codeEl.className) {
+                                var classes = codeEl.className.split(' ');
+                                for (var j = 0; j < classes.length; j++) {
+                                    if (classes[j].startsWith('language-')) {
+                                        lang = classes[j].replace('language-', '');
+                                        break;
                                     }
                                 }
-                                fetch('/prove-it', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({code: code.textContent, language: lang}) })                                                    .then(r => r.json()).then(function(d) { addMessage('assistant', d.report, 'Prove It', false, false); });
-                                            };
-                                            actionsDiv.appendChild(prove);
-                                            var regen = document.createElement('button'); regen.textContent = 'Regenerate'; regen.onclick = function() { userInput.value = prompt; sendMessage(); };
-                                            actionsDiv.appendChild(regen);
-                                            contentDiv.appendChild(actionsDiv);
-                                        }
+                            }
+                        }
+                        
+                        prove.textContent = 'Reviewing...';
+                        prove.disabled = true;
+                        
+                        fetch('/prove-it', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({code: code.textContent, language: lang, prompt: currentPrompt}) })
+                            .then(r => r.json())
+                            .then(function(d) {
+                                prove.textContent = 'Review';
+                                prove.disabled = false;
+                                
+                                var existing = contentDiv.querySelector('.review-panel');
+                                if (existing) existing.remove();
+                                
+                                var r = d.review;
+                                var v = d.verification;
+                                
+                                var panel = document.createElement('div');
+                                panel.className = 'review-panel';
+                                panel.style.cssText = 'margin-top:16px;border:1px solid var(--border);border-radius:10px;overflow:hidden;font-size:13px;background:var(--bg-secondary);';
+                                
+                                // Status bar
+                                var statusColor = v.overall === 'PASSED' ? '#22c55e' : v.overall === 'FAILED' ? '#ef4444' : '#fbbf24';
+                                var statusText = v.overall === 'PASSED' ? 'Passed' : v.overall === 'FAILED' ? 'Failed' : 'Warning';
+                                
+                                var html = '';
+                                html += '<div style="padding:14px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);">';
+                                html += '<div style="display:flex;align-items:center;gap:12px;">';
+                                html += '<div style="width:10px;height:10px;border-radius:50%;background:' + statusColor + ';"></div>';
+                                html += '<span style="font-weight:600;color:var(--text-primary);">Review</span>';
+                                html += '<span style="font-size:11px;color:var(--text-secondary);">' + r.lines_of_code + ' lines &middot; ' + r.language + '</span>';
+                                html += '</div>';
+                                html += '<span style="background:' + (v.confidence >= 0.9 ? '#22c55e' : v.confidence >= 0.7 ? '#fbbf24' : '#ef4444') + ';color:#000;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;">' + Math.round(v.confidence * 100) + '%</span>';
+                                html += '</div>';
+                                
+                                // Stats row
+                                html += '<div style="padding:12px 18px;display:flex;gap:28px;border-bottom:1px solid var(--border);">';
+                                html += '<div><span style="color:var(--text-secondary);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">Issues</span><br><span style="color:' + (v.issues > 0 ? '#ef4444' : '#22c55e') + ';font-weight:600;">' + (v.issues || '0') + '</span></div>';
+                                html += '<div><span style="color:var(--text-secondary);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">Warnings</span><br><span style="color:' + (v.warnings > 0 ? '#fbbf24' : '#22c55e') + ';font-weight:600;">' + (v.warnings || '0') + '</span></div>';
+                                html += '<div><span style="color:var(--text-secondary);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">Complexity</span><br><span style="color:var(--text-primary);font-weight:500;">' + (r.complexity || 'N/A') + '</span></div>';
+                                html += '</div>';
+                                
+                                // Issues section
+                                if (r.issues && r.issues.length > 0) {
+                                    html += '<div style="padding:12px 18px;border-bottom:1px solid var(--border);">';
+                                    html += '<div style="font-size:11px;color:#ef4444;font-weight:600;margin-bottom:6px;">Issues</div>';
+                                    r.issues.forEach(function(i) {
+                                        html += '<div style="display:flex;gap:8px;padding:4px 0;font-size:12px;">';
+                                        html += '<span style="color:#ef4444;flex-shrink:0;">&bull;</span>';
+                                        html += '<span style="color:var(--text-secondary);">' + i.finding + '</span>';
+                                        html += '</div>';
+                                    });
+                                    html += '</div>';
+                                }
+                                
+                                // Warnings section
+                                if (r.warnings && r.warnings.length > 0) {
+                                    html += '<div style="padding:12px 18px;border-bottom:1px solid var(--border);">';
+                                    html += '<div style="font-size:11px;color:#fbbf24;font-weight:600;margin-bottom:6px;">Warnings</div>';
+                                    r.warnings.forEach(function(w) {
+                                        html += '<div style="display:flex;gap:8px;padding:4px 0;font-size:12px;">';
+                                        html += '<span style="color:#fbbf24;flex-shrink:0;">&bull;</span>';
+                                        html += '<span style="color:var(--text-secondary);">' + w.finding + '</span>';
+                                        html += '</div>';
+                                    });
+                                    html += '</div>';
+                                }
+                                
+                                // Strengths section
+                                if (r.strengths && r.strengths.length > 0) {
+                                    html += '<div style="padding:12px 18px;border-bottom:1px solid var(--border);">';
+                                    html += '<div style="font-size:11px;color:#22c55e;font-weight:600;margin-bottom:6px;">Strengths</div>';
+                                    r.strengths.forEach(function(s) {
+                                        html += '<div style="display:flex;gap:8px;padding:4px 0;font-size:12px;">';
+                                        html += '<span style="color:#22c55e;flex-shrink:0;">&bull;</span>';
+                                        html += '<span style="color:var(--text-secondary);">' + s.finding + '</span>';
+                                        html += '</div>';
+                                    });
+                                    html += '</div>';
+                                }
+                                
+                                // Recommendations
+                                if (r.recommendations && r.recommendations.length > 0) {
+                                    html += '<div style="padding:12px 18px;">';
+                                    html += '<div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:6px;">Recommendations</div>';
+                                    r.recommendations.forEach(function(rec) {
+                                        var prioColor = rec.priority === 'critical' ? '#ef4444' : rec.priority === 'medium' ? '#fbbf24' : '#22c55e';
+                                        html += '<div style="display:flex;gap:8px;padding:4px 0;font-size:12px;align-items:center;">';
+                                        html += '<span style="background:' + prioColor + ';color:#000;font-size:9px;padding:1px 6px;border-radius:3px;font-weight:600;">' + rec.priority.toUpperCase() + '</span>';
+                                        html += '<span style="color:var(--text-secondary);">' + rec.action + '</span>';
+                                        html += '</div>';
+                                    });
+                                    html += '</div>';
+                                }
+                                
+                                panel.innerHTML = html;
+                                contentDiv.appendChild(panel);
+                            });                           
+                    };                  actionsDiv.appendChild(prove);
+                                        var regen = document.createElement('button'); regen.textContent = 'Regenerate'; regen.onclick = function() { userInput.value = prompt; sendMessage(); };
+                                        actionsDiv.appendChild(regen);
+                                        contentDiv.appendChild(actionsDiv);                                        }
                                         bubble.querySelectorAll('pre code').forEach(function(block) { hljs.highlightElement(block); });
                                         bubble.querySelectorAll('pre').forEach(function(pre) {
                                             var btn = document.createElement('button'); btn.className = 'copy-btn'; btn.textContent = 'Copy';
@@ -874,7 +972,7 @@ HTML_TEMPLATE = r'''
                 });
                                if (model) {
                     var actionsDiv = document.createElement('div'); actionsDiv.className = 'msg-actions';
-                    var prove = document.createElement('button'); prove.textContent = 'Prove It'; prove.onclick = function() {
+                    var prove = document.createElement('button'); prove.textContent = '🔍 Review'; prove.onclick = function() {
                         var code = bubble.querySelector('pre code');
                         if (!code) { alert('No code block found'); return; }
                         fetch('/prove-it', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({code: code.textContent, language: 'python'}) })
@@ -988,32 +1086,45 @@ def chat():
                 result_text = call_qwen3_coder(enriched_prompt)
                 model_used = 'Qwen3-Coder-480B'; task_type = 'manual_override'
                 cost = MODELS['qwen3-coder']['cost_per_1k_tokens'] * len(prompt) / 4000
+            elif model_override == 'claude-opus':
+                from router import call_claude_opus
+                result_text = call_claude_opus(enriched_prompt)
+                model_used = 'Claude Opus 4.8'; task_type = 'manual_override'
+                cost = MODELS['claude-opus']['cost_per_1k_tokens'] * len(prompt) / 4000
+            elif model_override == 'gemini':
+                from router import call_gemini
+                result_text = call_gemini(enriched_prompt)
+                model_used = 'Gemini 2.5 Flash'; task_type = 'manual_override'
+                cost = MODELS['gemini']['cost_per_1k_tokens'] * len(prompt) / 4000
+            elif model_override == 'mistral':
+                from router import call_mistral
+                result_text = call_mistral(enriched_prompt)
+                model_used = 'Mistral Large'; task_type = 'manual_override'
+                cost = MODELS['mistral']['cost_per_1k_tokens'] * len(prompt) / 4000
             else:
                 result_text = call_claude(enriched_prompt)
                 model_used = 'Claude Sonnet 4.6'; task_type = 'manual_override'
                 cost = MODELS['claude']['cost_per_1k_tokens'] * len(prompt) / 4000
         else:
-            # Estimate complexity and route accordingly
             from router import estimate_complexity
             complexity = estimate_complexity(prompt)
             
             if complexity == 'simple':
-                primary = 'deepseek'
+                primary = 'gemini'
             elif complexity == 'heavy':
-                primary = 'claude'
+                primary = 'claude-opus'
             else:
                 primary = plan['primary_model']
             
-            # Outcome-based override: use best model from real data
+            # Outcome-based override
             try:
+                from evaluator import evaluator
                 best = evaluator.get_best_model_for_task(plan['task_type'])
                 if best and complexity == 'standard':
                     primary = best
             except:
                 pass
             
-            logger.info(f"Complexity: {complexity} → Model: {MODELS[primary]['name']}")
-            print(f"!!! COMPLEXITY DEBUG: {complexity} → {MODELS[primary]['name']} !!!")
             if primary == 'deepseek':
                 result_text = call_deepseek(enriched_prompt)
             elif primary == 'claude':
@@ -1021,6 +1132,15 @@ def chat():
             elif primary == 'qwen3-coder':
                 from router import call_qwen3_coder
                 result_text = call_qwen3_coder(enriched_prompt)
+            elif primary == 'claude-opus':
+                from router import call_claude_opus
+                result_text = call_claude_opus(enriched_prompt)
+            elif primary == 'gemini':
+                from router import call_gemini
+                result_text = call_gemini(enriched_prompt)
+            elif primary == 'mistral':
+                from router import call_mistral
+                result_text = call_mistral(enriched_prompt)
             else:
                 result_text = call_deepseek(enriched_prompt)
             
@@ -1072,6 +1192,10 @@ def chat_stream():
     if not prompt:
         return jsonify({'error': 'Please enter a prompt.'})
     
+    task_type = 'other'
+    cost = 0
+    model_used = 'Unknown'
+    
     plan = route_task(prompt)
     enriched_prompt = enrich_prompt(prompt, plan['task_type'], user_id)
     start_time = time.time()
@@ -1088,17 +1212,29 @@ def chat_stream():
             from router import call_qwen3_coder
             result_text = call_qwen3_coder(enriched_prompt)
             model_used = 'Qwen3-Coder-480B'
+        elif model_override == 'claude-opus':
+            from router import call_claude_opus
+            result_text = call_claude_opus(enriched_prompt)
+            model_used = 'Claude Opus 4.8'
+        elif model_override == 'gemini':
+            from router import call_gemini
+            result_text = call_gemini(enriched_prompt)
+            model_used = 'Gemini 2.5 Flash'
+        elif model_override == 'mistral':
+            from router import call_mistral
+            result_text = call_mistral(enriched_prompt)
+            model_used = 'Mistral Large'
         else:
-            result_text = call_claude(enriched_prompt)
-            model_used = 'Claude Sonnet 4.6'
+            result_text = call_deepseek(enriched_prompt)
+            model_used = 'DeepSeek V3'
     else:
         from router import estimate_complexity
         complexity = estimate_complexity(prompt)
         
         if complexity == 'simple':
-            primary = 'deepseek'
+            primary = 'gemini'
         elif complexity == 'heavy':
-            primary = 'claude'
+            primary = 'claude-opus'
         else:
             primary = plan['primary_model']
         
@@ -1119,6 +1255,15 @@ def chat_stream():
         elif primary == 'qwen3-coder':
             from router import call_qwen3_coder
             result_text = call_qwen3_coder(enriched_prompt)
+        elif primary == 'claude-opus':
+            from router import call_claude_opus
+            result_text = call_claude_opus(enriched_prompt)
+        elif primary == 'gemini':
+            from router import call_gemini
+            result_text = call_gemini(enriched_prompt)
+        elif primary == 'mistral':
+            from router import call_mistral
+            result_text = call_mistral(enriched_prompt)
         else:
             result_text = call_deepseek(enriched_prompt)
         
@@ -1245,125 +1390,176 @@ def api_models():
 
 @app.route('/prove-it', methods=['POST'])
 def prove_it_endpoint():
-    """Verify code: syntax check, security scan, sandbox execution."""
+    """Professional engineering review for AI-generated code."""
     data = request.json
     code = data.get('code', '')
     language = data.get('language', 'python')
+    original_prompt = data.get('prompt', '')
     
     if not code:
         return jsonify({'error': 'No code provided'})
+    
     if language not in ['python', 'javascript', 'typescript', 'js', 'ts', 'java', 'c']:
         return jsonify({
-            'verification': {'overall': 'SKIPPED', 'issues': []},
-            'report': f"## Prove It Report\n\n**Overall:** ⚠️ SKIPPED\n\nProve It supports Python, JavaScript, TypeScript, Java, and C. {language} support coming soon."
+            'verification': {'overall': 'SKIPPED'},
+            'report': f"## Prove It — Engineering Review\n\n**Status:** ⚠️ Language Not Supported\n\nProve It currently reviews Python, JavaScript, TypeScript, Java, and C."
         })
-        return jsonify({
-            'verification': {'overall': 'SKIPPED', 'issues': []},
-            'report': f"## Prove It Report\n\n**Overall:** ⚠️ SKIPPED\n\nProve It supports Python, JavaScript, and TypeScript. {language} support coming soon."
-        })
+    
     issues = []
+    warnings = []
+    strengths = []
     
-    # Security checks
-    if re.search(r'(password|secret|api_key|token)\s*=\s*["\'][^"\']+["\']', code):
-        issues.append({'severity': 'critical', 'issue': 'Hardcoded secret detected'})
-    if 'eval(' in code:
-        issues.append({'severity': 'critical', 'issue': 'Unsafe eval() usage'})
-    if re.search(r'f".*SELECT.*\{', code):
-        issues.append({'severity': 'high', 'issue': 'Potential SQL injection'})
-    if 'os.system(' in code or 'subprocess.call' in code:
-        issues.append({'severity': 'high', 'issue': 'Shell injection risk'})
-    # JavaScript/TypeScript security checks
-    if language in ['javascript', 'typescript', 'js', 'ts']:
-        if re.search(r'(password|secret|api_key|token)\s*[:=]\s*["\'][^"\']+["\']', code):
-            issues.append({'severity': 'critical', 'issue': 'Hardcoded secret detected'})
-        if 'eval(' in code:
-            issues.append({'severity': 'critical', 'issue': 'Unsafe eval() usage'})
-        if 'innerHTML' in code:
-            issues.append({'severity': 'high', 'issue': 'Potential XSS via innerHTML'})
-        if 'document.write(' in code:
-            issues.append({'severity': 'high', 'issue': 'Unsafe document.write()'})   
-    # Java security checks
-    if language == 'java':
-        if re.search(r'(password|secret|api_key|token)\s*=\s*"[^"]+', code):
-            issues.append({'severity': 'critical', 'issue': 'Hardcoded secret detected'})
-        if 'Runtime.getRuntime().exec(' in code:
-            issues.append({'severity': 'critical', 'issue': 'Shell injection via Runtime.exec()'})
-        if 'System.exit(' in code:
-            issues.append({'severity': 'low', 'issue': 'System.exit() may cause unexpected termination'})
+    # ═══════════════════════════════════════════════════════════
+    # 1. SECURITY REVIEW
+    # ═══════════════════════════════════════════════════════════
     
-    # C security checks
-    if language == 'c':
-        if 'system(' in code:
-            issues.append({'severity': 'critical', 'issue': 'Shell injection via system()'})
-        if 'gets(' in code:
-            issues.append({'severity': 'high', 'issue': 'Buffer overflow risk: gets() is unsafe'})
-        if 'strcpy(' in code and 'strncpy(' not in code:
-            issues.append({'severity': 'medium', 'issue': 'Consider strncpy() instead of strcpy()'})
-        if 'malloc(' in code and 'free(' not in code:
-            issues.append({'severity': 'medium', 'issue': 'Potential memory leak: malloc without free'})
-        if 'scanf("%s"' in code:
-            issues.append({'severity': 'high', 'issue': 'Buffer overflow risk: unbounded scanf %s'}) 
-    # Syntax check (Python only)
+    security_checks = {
+        'python': [
+            (r'(password|secret|api_key|token)\s*=\s*["\'][^"\']+["\']', 'critical', 'Hardcoded secret detected — use environment variables'),
+            (r'eval\(', 'critical', 'Unsafe eval() — can execute arbitrary code'),
+            (r'exec\(', 'critical', 'Unsafe exec() — can execute arbitrary code'),
+            (r'os\.system\(', 'high', 'Shell injection risk via os.system()'),
+            (r'pickle\.loads?\(', 'high', 'Unsafe deserialization — pickle can execute arbitrary code'),
+            (r'f".*SELECT.*\{', 'high', 'Potential SQL injection via f-string'),
+            (r'except\s*:', 'medium', 'Bare except clause — catch specific exceptions'),
+        ],
+        'javascript': [
+            (r'(password|secret|api_key|token)\s*[:=]\s*["\'][^"\']+["\']', 'critical', 'Hardcoded secret detected'),
+            (r'eval\(', 'critical', 'Unsafe eval() — can execute arbitrary code'),
+            (r'innerHTML\s*=', 'high', 'Potential XSS via innerHTML'),
+            (r'document\.write\(', 'high', 'Unsafe document.write()'),
+        ],
+        'java': [
+            (r'(password|secret|api_key|token)\s*=\s*"[^"]+', 'critical', 'Hardcoded secret detected'),
+            (r'Runtime\.getRuntime\(\)\.exec\(', 'critical', 'Shell injection via Runtime.exec()'),
+        ],
+        'c': [
+            (r'system\(', 'critical', 'Shell injection via system()'),
+            (r'gets\(', 'high', 'Buffer overflow risk — gets() is unsafe'),
+            (r'scanf\("%s"', 'high', 'Buffer overflow risk — unbounded %s'),
+        ],
+    }
+    
+    lang_key = 'python' if language not in security_checks else language
+    if language in ['typescript', 'ts']: lang_key = 'javascript'
+    if language in ['js']: lang_key = 'javascript'
+    
+    for pattern, severity, message in security_checks.get(lang_key, []):
+        if re.search(pattern, code):
+            if severity == 'critical':
+                issues.append({'category': 'Security', 'severity': severity, 'finding': message})
+            else:
+                warnings.append({'category': 'Security', 'severity': severity, 'finding': message})
+    
+    # ═══════════════════════════════════════════════════════════
+    # 2. CODE QUALITY REVIEW
+    # ═══════════════════════════════════════════════════════════
+    
+    lines = code.split('\n')
+    
+    # Check for comments/documentation
+    if language == 'python':
+        has_docstring = '"""' in code or "'''" in code
+        has_comments = any('# ' in line or '#\t' in line for line in lines)
+        if has_docstring:
+            strengths.append({'category': 'Documentation', 'finding': 'Includes docstrings'})
+        elif has_comments:
+            strengths.append({'category': 'Documentation', 'finding': 'Includes inline comments'})
+        else:
+            warnings.append({'category': 'Documentation', 'severity': 'low', 'finding': 'No docstrings or comments — consider adding documentation'})
+    
+    # Check for error handling
+    if language == 'python':
+        has_error_handling = 'try:' in code or 'except' in code or 'raise ' in code
+    elif lang_key == 'javascript':
+        has_error_handling = 'try {' in code or 'catch' in code or 'throw ' in code
+    elif language == 'java':
+        has_error_handling = 'try {' in code or 'catch' in code or 'throw ' in code
+    else:
+        has_error_handling = True
+    
+    if has_error_handling:
+        strengths.append({'category': 'Robustness', 'finding': 'Includes error handling'})
+    elif len(lines) > 20:
+        warnings.append({'category': 'Robustness', 'severity': 'medium', 'finding': 'No error handling detected — consider adding try/catch'})
+    
+    # Check for type hints (Python) or type annotations (TS)
+    if language == 'python' and ('def ' in code):
+        if '-> ' in code or ': int' in code or ': str' in code or ': bool' in code or ': list' in code or ': dict' in code:
+            strengths.append({'category': 'Code Quality', 'finding': 'Uses type hints'})
+        elif len(lines) > 30:
+            warnings.append({'category': 'Code Quality', 'severity': 'low', 'finding': 'Consider adding type hints for better maintainability'})
+    
+    # Check function length
+    function_lines = 0
+    in_function = False
+    for line in lines:
+        if line.strip().startswith('def ') or line.strip().startswith('function ') or '(' in line and '{' in line:
+            in_function = True
+        if in_function:
+            function_lines += 1
+    
+    # ═══════════════════════════════════════════════════════════
+    # 3. SYNTAX VALIDATION
+    # ═══════════════════════════════════════════════════════════
+    
+    syntax_ok = True
     if language == 'python':
         try:
-            compile(code, '<test>', 'exec')
-            syntax_ok = True
+            compile(code, '<review>', 'exec')
         except SyntaxError as e:
             syntax_ok = False
-            issues.append({'severity': 'high', 'issue': f'Syntax error: {str(e)}'})
-    else:
-        syntax_ok = True
-    # JavaScript/TypeScript syntax check
-    if language in ['javascript', 'typescript', 'js', 'ts']:
-        try:
-            result = subprocess.run(['node', '--check'], input=code, capture_output=True, text=True, timeout=5)
-            syntax_ok = result.returncode == 0
-            if not syntax_ok:
-                issues.append({'severity': 'high', 'issue': f'Syntax error: {result.stderr[:200]}'})
-        except FileNotFoundError:
-            syntax_ok = True
-        except:
-            syntax_ok = True   
-    # Java syntax check (requires javac)
-    if language == 'java':
-        try:
-            result = subprocess.run(['javac', '--version'], capture_output=True, text=True, timeout=3)
-            if result.returncode == 0:
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.java', delete=False) as f:
-                    f.write(code)
-                    temp_path = f.name
-                result = subprocess.run(['javac', temp_path], capture_output=True, text=True, timeout=10)
-                os.unlink(temp_path)
-                syntax_ok = result.returncode == 0
-                if not syntax_ok:
-                    issues.append({'severity': 'high', 'issue': f'Compilation error: {result.stderr[:200]}'})
-            else:
-                syntax_ok = True  # javac not installed
-        except FileNotFoundError:
-            syntax_ok = True
-        except:
-            syntax_ok = True
+            issues.append({'category': 'Syntax', 'severity': 'critical', 'finding': f'Syntax error: {str(e)}'})
     
-    # C syntax check (requires gcc)
-    if language == 'c':
-        try:
-            result = subprocess.run(['gcc', '--version'], capture_output=True, text=True, timeout=3)
-            if result.returncode == 0:
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False) as f:
-                    f.write(code)
-                    temp_path = f.name
-                result = subprocess.run(['gcc', '-fsyntax-only', temp_path], capture_output=True, text=True, timeout=10)
-                os.unlink(temp_path)
-                syntax_ok = result.returncode == 0
-                if not syntax_ok:
-                    issues.append({'severity': 'high', 'issue': f'Compilation error: {result.stderr[:200]}'})
-            else:
-                syntax_ok = True
-        except FileNotFoundError:
-            syntax_ok = True
-        except:
-            syntax_ok = True 
-    # Run in sandbox
+    # ═══════════════════════════════════════════════════════════
+    # 4. TEST COVERAGE ASSESSMENT
+    # ═══════════════════════════════════════════════════════════
+    
+    has_tests = any(word in code.lower() for word in ['assert', 'test', 'expect(', 'it(', 'describe('])
+    if has_tests:
+        strengths.append({'category': 'Testing', 'finding': 'Includes test cases'})
+    else:
+        warnings.append({'category': 'Testing', 'severity': 'medium', 'finding': 'No test cases included — add assertions or unit tests'})
+    
+    # ═══════════════════════════════════════════════════════════
+    # 5. EDGE CASE ANALYSIS
+    # ═══════════════════════════════════════════════════════════
+    
+    edge_cases_found = []
+    if 'null' in code.lower() or 'none' in code.lower() or 'empty' in code.lower():
+        edge_cases_found.append('Null/empty input handling')
+    if '0' in code or 'zero' in code.lower() or 'negative' in code.lower():
+        edge_cases_found.append('Zero/negative value handling')
+    if 'max' in code.lower() or 'min' in code.lower() or 'bound' in code.lower():
+        edge_cases_found.append('Boundary condition handling')
+    
+    if edge_cases_found:
+        strengths.append({'category': 'Edge Cases', 'finding': f'Handles: {", ".join(edge_cases_found)}'})
+    elif len(lines) > 20:
+        warnings.append({'category': 'Edge Cases', 'severity': 'medium', 'finding': 'No obvious edge case handling — consider null, empty, and boundary inputs'})
+    
+    # ═══════════════════════════════════════════════════════════
+    # 6. COMPLEXITY ESTIMATION
+    # ═══════════════════════════════════════════════════════════
+    
+    has_nested_loops = False
+    for i, line in enumerate(lines):
+        if ('for ' in line or 'while ' in line) and i + 1 < len(lines):
+            if ('for ' in lines[i+1] or 'while ' in lines[i+1]):
+                has_nested_loops = True
+    
+    complexity_note = 'O(n) or better' if not has_nested_loops else 'May contain O(n²) patterns'
+    if 'sort' in code.lower() or 'sorted' in code.lower():
+        complexity_note = 'O(n log n) from sorting'
+    
+    # ═══════════════════════════════════════════════════════════
+    # 7. SANDBOX EXECUTION
+    # ═══════════════════════════════════════════════════════════
+    
+    execution_ok = None
+    exec_output = ''
+    exec_error = ''
+    
     if language == 'python':
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
@@ -1376,146 +1572,99 @@ def prove_it_endpoint():
             exec_error = result.stderr[:500]
         except subprocess.TimeoutExpired:
             execution_ok = False
-            exec_output = ''
-            exec_error = 'Timed out after 10 seconds'
+            exec_error = 'Execution timed out after 10 seconds'
         except Exception as e:
             execution_ok = False
-            exec_output = ''
             exec_error = str(e)
     
-    elif language in ['javascript', 'js']:
-        try:
-            result = subprocess.run(['node', '-e', code], capture_output=True, text=True, timeout=10)
-            execution_ok = result.returncode == 0
-            exec_output = result.stdout[:500]
-            exec_error = result.stderr[:500]
-        except FileNotFoundError:
-            execution_ok = None
-            exec_output = ''
-            exec_error = 'Node.js not installed'
-        except subprocess.TimeoutExpired:
-            execution_ok = False
-            exec_output = ''
-            exec_error = 'Timed out after 10 seconds'
-        except Exception as e:
-            execution_ok = False
-            exec_output = ''
-            exec_error = str(e)
+    # ═══════════════════════════════════════════════════════════
+    # 8. CONFIDENCE SCORE
+    # ═══════════════════════════════════════════════════════════
     
-    elif language in ['typescript', 'ts']:
-        try:
-            result = subprocess.run(['npx', 'tsx', '-e', code], capture_output=True, text=True, timeout=10)
-            execution_ok = result.returncode == 0
-            exec_output = result.stdout[:500]
-            exec_error = result.stderr[:500]
-        except FileNotFoundError:
-            execution_ok = None
-            exec_output = ''
-            exec_error = 'tsx not installed (run: npm install -g tsx)'
-        except subprocess.TimeoutExpired:
-            execution_ok = False
-            exec_output = ''
-            exec_error = 'Timed out after 10 seconds'
-        except Exception as e:
-            execution_ok = False
-            exec_output = ''
-            exec_error = str(e)
-    
-    elif language == 'java':
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.java', delete=False) as f:
-                f.write(code)
-                temp_path = f.name
-            # Compile
-            compile_result = subprocess.run(['javac', temp_path], capture_output=True, text=True, timeout=10)
-            if compile_result.returncode == 0:
-                # Run
-                class_dir = os.path.dirname(temp_path)
-                class_name = os.path.splitext(os.path.basename(temp_path))[0]
-                run_result = subprocess.run(['java', '-cp', class_dir, class_name], capture_output=True, text=True, timeout=10)
-                execution_ok = run_result.returncode == 0
-                exec_output = run_result.stdout[:500]
-                exec_error = run_result.stderr[:500]
-            else:
-                execution_ok = False
-                exec_output = ''
-                exec_error = compile_result.stderr[:500]
-            os.unlink(temp_path)
-        except FileNotFoundError:
-            execution_ok = None
-            exec_output = ''
-            exec_error = 'Java not installed'
-        except subprocess.TimeoutExpired:
-            execution_ok = False
-            exec_output = ''
-            exec_error = 'Timed out after 10 seconds'
-        except Exception as e:
-            execution_ok = False
-            exec_output = ''
-            exec_error = str(e)
-    
-    elif language == 'c':
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False) as f:
-                f.write(code)
-                temp_path = f.name
-            exe_path = temp_path + '.exe'
-            compile_result = subprocess.run(['gcc', temp_path, '-o', exe_path], capture_output=True, text=True, timeout=10)
-            if compile_result.returncode == 0:
-                run_result = subprocess.run([exe_path], capture_output=True, text=True, timeout=10)
-                execution_ok = run_result.returncode == 0
-                exec_output = run_result.stdout[:500]
-                exec_error = run_result.stderr[:500]
-                os.unlink(exe_path)
-            else:
-                execution_ok = False
-                exec_output = ''
-                exec_error = compile_result.stderr[:500]
-            os.unlink(temp_path)
-        except FileNotFoundError:
-            execution_ok = None
-            exec_output = ''
-            exec_error = 'GCC not installed'
-        except subprocess.TimeoutExpired:
-            execution_ok = False
-            exec_output = ''
-            exec_error = 'Timed out after 10 seconds'
-        except Exception as e:
-            execution_ok = False
-            exec_output = ''
-            exec_error = str(e)
-    
-    else:
-        execution_ok = None
-        exec_output = ''
-        exec_error = f'Execution not supported for {language}'
-    
-    # Build report
-    passed = syntax_ok and (execution_ok is True or execution_ok is None) and len([i for i in issues if i['severity'] in ['critical', 'high']]) == 0
-    
-    report = f"## Prove It Report\n\n**Overall:** {'✅ PASSED' if passed else '❌ FAILED'}\n\n"
-    report += f"**Syntax:** {'✅ Valid' if syntax_ok else '❌ Error'}\n"
-    
-    if execution_ok is True:
-        report += f"**Execution:** ✅ Ran successfully\n"
-    elif execution_ok is False:
-        report += f"**Execution:** ❌ Failed\n"
-    elif execution_ok is None:
-        report += f"**Execution:** ⚠️ Skipped (compiler/runtime not available)\n"
-    
-    report += f"**Security:** {'✅ No issues' if not issues else '❌ ' + str(len(issues)) + ' issue(s)'}\n"
-    
-    if exec_output:
-        report += f"\n### Output\n```\n{exec_output}\n```\n"
-    if exec_error:
-        report += f"\n### Errors\n```\n{exec_error}\n```\n"
+    confidence = 1.0
     if issues:
-        report += f"\n### Issues\n"
-        for issue in issues:
-            report += f"- **[{issue['severity'].upper()}]** {issue['issue']}\n"
+        confidence -= 0.3 * len([i for i in issues if i['severity'] == 'critical'])
+        confidence -= 0.15 * len([i for i in issues if i['severity'] == 'high'])
+    if warnings:
+        confidence -= 0.05 * len(warnings)
+    if not syntax_ok:
+        confidence -= 0.4
+    if execution_ok is False:
+        confidence -= 0.3
+    if not has_tests:
+        confidence -= 0.1
+    confidence = max(0.0, min(1.0, confidence))
+    
+    if confidence >= 0.9:
+        confidence_level = 'High — Production Ready'
+    elif confidence >= 0.7:
+        confidence_level = 'Medium — Minor Issues'
+    elif confidence >= 0.5:
+        confidence_level = 'Low — Needs Review'
+    else:
+        confidence_level = 'Critical — Do Not Deploy'
+    
+    # ═══════════════════════════════════════════════════════════
+    # BUILD REPORT
+    # ═══════════════════════════════════════════════════════════
+    
+    overall = '✅ PASSED' if (syntax_ok and not issues and execution_ok is not False) else '❌ FAILED' if (not syntax_ok or issues or execution_ok is False) else '⚠️ WARNING'
+    
+    # ═══════════════════════════════════════════════════════════
+    # BUILD STRUCTURED RESPONSE
+    # ═══════════════════════════════════════════════════════════
+    
+    overall = 'PASSED' if (syntax_ok and not issues and execution_ok is not False) else 'FAILED' if (not syntax_ok or issues or execution_ok is False) else 'WARNING'
+    # Collect failure modes
+    failure_modes = []
+    if not has_error_handling:
+        failure_modes.append('Unexpected inputs may cause unhandled exceptions')
+    if not has_tests:
+        failure_modes.append('Regressions may go undetected without tests')
+    if has_nested_loops:
+        failure_modes.append('Performance degradation with large inputs due to nested loops')
+    if not edge_cases_found:
+        failure_modes.append('May fail on edge cases (null, empty, boundary values)')    
+    # Build structured data for the frontend
+    review_data = {
+        'overall': overall,
+        'confidence': round(confidence, 2),
+        'language': language,
+        'lines_of_code': len(lines),
+        'issues': [{'severity': i['severity'], 'category': i['category'], 'finding': i['finding']} for i in issues],
+        'warnings': [{'severity': w['severity'], 'category': w['category'], 'finding': w['finding']} for w in warnings],
+        'strengths': [{'category': s['category'], 'finding': s['finding']} for s in strengths],
+        'syntax_valid': syntax_ok,
+        'execution': {
+            'ran': execution_ok is not None,
+            'passed': execution_ok is True,
+            'output': exec_output[:200] if exec_output else None,
+            'error': exec_error[:200] if exec_error else None
+        },
+        'edge_cases': edge_cases_found,
+        'failure_modes': failure_modes,
+        'recommendations': [],
+        'complexity': complexity_note
+    }
+    
+    # Generate recommendations
+    if confidence < 0.9:
+        if not has_tests:
+            review_data['recommendations'].append({'priority': 'medium', 'action': 'Add unit tests to prevent regressions'})
+        if not has_error_handling and len(lines) > 20:
+            review_data['recommendations'].append({'priority': 'low', 'action': 'Add error handling for robustness'})
+    if issues:
+        review_data['recommendations'].append({'priority': 'critical', 'action': 'Address security issues before deployment'})
+    
     return jsonify({
-        'verification': {'overall': 'PASSED' if passed else 'FAILED', 'issues': issues},
-        'report': report
+        'verification': {
+            'overall': overall,
+            'confidence': round(confidence, 2),
+            'issues': len(issues),
+            'warnings': len(warnings),
+            'strengths': len(strengths)
+        },
+        'review': review_data
     })
 # ═══════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════
