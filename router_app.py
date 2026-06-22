@@ -1071,6 +1071,13 @@ def chat():
             context_prompt = f"Previous conversation:\n{context}\n\nNew request: {prompt}"
         
         plan = route_task(prompt)
+        
+        # Check if adversarial review should be triggered
+        from adversarial_router import adversarial
+        adv_assessment = adversarial.should_adversarial_review(prompt)
+        if adv_assessment['review_required']:
+            logger.info(f"Adversarial review triggered: {adv_assessment['reason']}")
+        
         enriched_prompt = enrich_prompt(context_prompt, plan['task_type'], user_id)
         start_time = time.time()
         
@@ -2303,6 +2310,21 @@ def compliance_dashboard():
             <div id="reportResult" style="margin-top:12px;"></div>
         </div>
         
+        <div class="card">
+            <h2>Adversarial Review Test</h2>
+            <textarea id="advPrompt" placeholder="e.g., Add payment processing with credit card validation..." style="width:100%;background:#0f0f1a;border:1px solid #262626;color:#e5e5e5;padding:12px;border-radius:8px;font-size:13px;min-height:60px;"></textarea>
+            <button onclick="adversarialTest()" style="margin-top:8px;">Run Adversarial Review</button>
+            <div id="advResult" style="margin-top:12px;"></div>
+        </div>
+        <script>
+            function adversarialTest() {
+                var prompt = document.getElementById('advPrompt').value;
+                fetch('/adversarial/review', { method: 'POST', headers: {'Content-Type':'application/json', 'X-API-Key': API_KEY}, body: JSON.stringify({prompt: prompt}) })
+                    .then(r => r.json()).then(d => { document.getElementById('advResult').innerHTML = '<pre style="font-size:12px;">' + JSON.stringify(d, null, 2) + '</pre>'; });
+            }
+        </script>
+        </div>
+        
         <script>
             var API_KEY = 'demo-key-123';
             
@@ -2349,6 +2371,50 @@ def compliance_dashboard():
             }
         </script>
     </body></html>''';
+
+# ═══════════════════════════════════════════════════════════════
+# ADVERSARIAL ROUTING ROUTES
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/adversarial/review', methods=['POST'])
+@require_auth
+def adversarial_review():
+    """Run adversarial review on a prompt."""
+    from adversarial_router import adversarial
+    
+    data = request.json
+    prompt = data.get('prompt', '')
+    
+    if not prompt:
+        return jsonify({'error': 'No prompt provided'})
+    
+    # Check if adversarial review is needed
+    assessment = adversarial.should_adversarial_review(prompt)
+    
+    if not assessment['review_required']:
+        return jsonify({
+            'review_required': False,
+            'reason': 'Standard risk task. Single model sufficient.',
+            'assessment': assessment
+        })
+    
+    # Run multi-model review
+    review = adversarial.run_adversarial_review(prompt)
+    verdict = adversarial.generate_verdict(review)
+    
+    return jsonify({
+        'review_required': True,
+        'assessment': assessment,
+        'review': review,
+        'verdict': verdict
+    })
+
+@app.route('/adversarial/history')
+@require_auth
+def adversarial_history():
+    """Get adversarial review history."""
+    from adversarial_router import adversarial
+    return jsonify({'reviews': adversarial.get_review_history()})
 
 if __name__ == '__main__':
     logger.info("=" * 50)
