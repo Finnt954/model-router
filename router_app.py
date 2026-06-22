@@ -410,6 +410,7 @@ def update_analytics(model_used, task_type, cost, latency, was_cached):
     conn.commit()
     conn.close()
 
+
 # ═══════════════════════════════════════════════════════════════
 # HTML TEMPLATE
 # ═══════════════════════════════════════════════════════════════
@@ -564,7 +565,8 @@ HTML_TEMPLATE = r'''
         <div class="header">
             <div class="header-title" id="headerTitle">New conversation</div>
             <div class="header-actions">
-                <button onclick="shareConversation()">Share</button>
+                <button onclick="shareConversation()">Share</button>              
+                <button onclick="window.location.href='/compliance'">Compliance</button>
                 <button onclick="window.location.href='/usage'">Usage</button>
                 <button onclick="exportConversation()">Export</button>
             </div>
@@ -1155,6 +1157,22 @@ def chat():
         save_history(user_id, conversation_id, 'user', prompt, model_used, task_type, cost)
         save_history(user_id, conversation_id, 'assistant', result_text, model_used, task_type, cost)
         update_analytics(model_used, task_type, cost, elapsed, False)
+        print(f"!!! PROVENANCE DEBUG: user={user_id}, model={model_used}, prompt_len={len(prompt)}")        
+        # Record in provenance ledger
+        try:
+            from provenance_ledger import provenance
+            provenance.record(
+                user_id=user_id,
+                event_type='chat_request',
+                model_used=model_used,
+                prompt=prompt,
+                response=result_text,
+                session_id=conversation_id,
+                client_ip=request.remote_addr,
+                user_agent=request.headers.get('User-Agent', '')
+            )
+        except Exception as e:
+            logger.warning(f"Provenance recording skipped: {e}")
         
         # ─── PHASES 16-22: Outcome Tracking, Dataset, Evaluation ───
         # ─── Evaluation & Outcome Tracking ───
@@ -1276,6 +1294,23 @@ def chat_stream():
     save_history(user_id, conversation_id, 'user', prompt, model_used, task_type, cost)
     save_history(user_id, conversation_id, 'assistant', result_text, model_used, task_type, cost)
     update_analytics(model_used, task_type, cost, elapsed, False)
+ 
+    
+    # Record in provenance ledger
+    try:
+        from provenance_ledger import provenance
+        provenance.record(
+            user_id=user_id,
+            event_type='chat_request',
+            model_used=model_used,
+            prompt=prompt,
+            response=result_text,
+            session_id=conversation_id,
+            client_ip=request.remote_addr,
+            user_agent=request.headers.get('User-Agent', '')
+        )
+    except Exception as e:
+        logger.warning(f"Provenance recording skipped: {e}")
     set_cache(prompt, result_text, model_used, task_type, cost)
     
     def generate():
@@ -2153,6 +2188,168 @@ def checkout_page():
             }
         </script>
     </body></html>''';
+# ═══════════════════════════════════════════════════════════════
+# COMPLIANCE & PROVENANCE ROUTES
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/compliance/audit')
+@require_auth
+def compliance_audit():
+    """Generate audit trail for compliance review."""
+    from provenance_ledger import provenance
+    trail = provenance.get_audit_trail(
+        user_id=request.args.get('user_id'),
+        model=request.args.get('model'),
+        hours=int(request.args.get('hours', 24))
+    )
+    return jsonify({'events': len(trail), 'trail': trail})
+
+@app.route('/compliance/verify')
+@require_auth
+def compliance_verify():
+    """Verify integrity of the provenance chain."""
+    from provenance_ledger import provenance
+    result = provenance.verify_chain_integrity()
+    return jsonify(result)
+
+@app.route('/compliance/report', methods=['POST'])
+@require_auth
+def compliance_report():
+    """Generate a compliance report."""
+    from provenance_ledger import provenance
+    data = request.json
+    report = provenance.generate_compliance_report(
+        report_type=data.get('type', 'soc2_ai_usage'),
+        period_start=data.get('period_start'),
+        period_end=data.get('period_end'),
+        generated_by=getattr(request, 'user_id', 'anonymous')
+    )
+    return jsonify(report)
+
+@app.route('/compliance/review', methods=['POST'])
+@require_auth
+def compliance_review():
+    """Record a human review of an AI decision."""
+    from provenance_ledger import provenance
+    data = request.json
+    provenance.record_human_review(
+        event_id=data.get('event_id'),
+        reviewer=getattr(request, 'user_id', 'anonymous'),
+        decision=data.get('decision', 'approved'),
+        notes=data.get('notes', '')
+    )
+    return jsonify({'status': 'reviewed'})
+
+@app.route('/compliance/models')
+def compliance_models():
+    """Get compliance status for all models."""
+    from provenance_ledger import provenance
+    return jsonify(provenance.get_model_compliance_status())
+
+@app.route('/compliance')
+def compliance_dashboard():
+    """Enterprise compliance dashboard."""
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head><title>Compliance - ModelRouter</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #0d0d0d; color: #e5e5e5; padding: 40px; max-width: 1000px; margin: 0 auto; }
+        .card { background: #1a1a1a; border: 1px solid #262626; border-radius: 12px; padding: 24px; margin: 16px 0; }
+        h1 { color: #3b82f6; }
+        h2 { color: #e5e5e5; font-size: 16px; margin-top: 0; }
+        .metric { font-size: 28px; font-weight: 700; }
+        .green { color: #22c55e; }
+        .yellow { color: #fbbf24; }
+        .red { color: #ef4444; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #262626; font-size: 13px; }
+        th { color: #888; font-size: 11px; text-transform: uppercase; }
+        button { background: #3b82f6; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-right: 8px; }
+        button:hover { background: #2563eb; }
+        .status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .status.active { background: #22c55e; }
+        .status.warning { background: #fbbf24; }
+        .status.error { background: #ef4444; }
+        select { background: #0f0f1a; border: 1px solid #262626; color: #e5e5e5; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+    </style></head>
+    <body>
+        <h1>Compliance Dashboard</h1>
+        
+        <div class="grid" id="metricsGrid"></div>
+        
+        <div class="card">
+            <h2>Model Compliance Status</h2>
+            <table id="modelTable"></table>
+        </div>
+        
+        <div class="card">
+            <h2>Recent Audit Trail</h2>
+            <table id="auditTable"></table>
+        </div>
+        
+        <div class="card">
+            <h2>Generate Report</h2>
+            <select id="reportType">
+                <option value="soc2_ai_usage">SOC 2 - AI Usage</option>
+                <option value="gdpr_data_processing">GDPR - Data Processing</option>
+                <option value="model_inventory">Model Inventory</option>
+                <option value="security_incidents">Security Incidents</option>
+                <option value="eu_ai_act">EU AI Act Compliance</option>
+            </select>
+            <button onclick="generateReport()">Generate Report</button>
+            <button onclick="verifyChain()">Verify Chain Integrity</button>
+            <div id="reportResult" style="margin-top:12px;"></div>
+        </div>
+        
+        <script>
+            var API_KEY = 'demo-key-123';
+            
+            // Load compliance status
+            fetch('/compliance/models')
+                .then(r => r.json()).then(d => {
+                    var html = '';
+                    for (var m in d) {
+                        var info = d[m];
+                        var status = info.soc2_compliant ? 'active' : 'warning';
+                        html += '<tr><td>' + m + '</td><td><span class="status ' + status + '"></span>' + (info.soc2_compliant ? 'Compliant' : 'Not Certified') + '</td><td>' + info.data_residency + '</td><td>' + info.policy + '</td><td>' + info.training_data_cutoff + '</td></tr>';
+                    }
+                    document.getElementById('modelTable').innerHTML = '<tr><th>Model</th><th>SOC2</th><th>Data Residency</th><th>Policy</th><th>Training Cutoff</th></tr>' + html;
+                });
+            
+            // Load audit trail
+            fetch('/compliance/audit?api_key=' + API_KEY + '&hours=168&limit=20')
+                .then(r => r.json()).then(d => {
+                    var html = '';
+                    d.trail.forEach(function(e) {
+                        html += '<tr><td>' + e.timestamp + '</td><td>' + e.model_used + '</td><td>' + e.event_type + '</td><td>' + (e.security_issues_found || '0') + '</td><td>' + (e.human_reviewed ? 'Yes' : 'No') + '</td></tr>';
+                    });
+                    document.getElementById('auditTable').innerHTML = '<tr><th>Time</th><th>Model</th><th>Event</th><th>Issues</th><th>Reviewed</th></tr>' + html;
+                });
+            
+            // Load metrics
+            fetch('/compliance/verify?api_key=' + API_KEY)
+                .then(r => r.json()).then(d => {
+                    document.getElementById('metricsGrid').innerHTML = 
+                        '<div class="card"><div class="metric green">' + d.total_events + '</div>Total Events</div>' +
+                        '<div class="card"><div class="metric ' + (d.integrity ? 'green' : 'red') + '">' + (d.integrity ? 'Intact' : 'Breach') + '</div>Chain Integrity</div>' +
+                        '<div class="card"><div class="metric">' + d.verified_count + '</div>Verified</div>';
+                });
+            
+            function generateReport() {
+                var type = document.getElementById('reportType').value;
+                fetch('/compliance/report', { method: 'POST', headers: {'Content-Type':'application/json', 'X-API-Key': API_KEY}, body: JSON.stringify({type: type, period_start: '2026-06-01', period_end: '2026-06-30'}) })
+                    .then(r => r.json()).then(d => { document.getElementById('reportResult').innerHTML = '<pre style="font-size:12px;">' + JSON.stringify(d, null, 2) + '</pre>'; });
+            }
+            
+            function verifyChain() {
+                fetch('/compliance/verify?api_key=' + API_KEY)
+                    .then(r => r.json()).then(d => { alert(d.integrity ? 'Chain integrity verified. All ' + d.total_events + ' events intact.' : 'Chain integrity broken at event: ' + d.first_break.event_id); });
+            }
+        </script>
+    </body></html>''';
+
 if __name__ == '__main__':
     logger.info("=" * 50)
     logger.info("AI Model Router v5.0 - ChatGPT-Style Platform")
