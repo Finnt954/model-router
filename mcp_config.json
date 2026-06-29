@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "modelrouter": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "cwd": "/path/to/model-router",
+      "description": "AI Model Router - intelligently routes coding tasks to the best model"
+    }
+  }
+}
